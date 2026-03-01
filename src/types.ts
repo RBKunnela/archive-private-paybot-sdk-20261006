@@ -89,3 +89,47 @@ export interface HealthResult {
 }
 
 export type TrustLevel = 0 | 1 | 2 | 3 | 4 | 5;
+
+// --- Auth types (onboarding) ---
+
+export interface SignupResult {
+  operatorId: string;
+  apiKey: string;
+  botId: string;
+  message: string;
+}
+
+export interface LoginResult {
+  accessToken: string;
+  refreshToken: string;
+  expiresIn: number;
+  operator: {
+    id: string;
+    email: string;
+    tier: string;
+    displayName?: string;
+  };
+}
+
+export interface ApiKeyResult {
+  id: string;
+  key: string;
+  keyPrefix: string;
+  operatorId: string;
+  label?: string;
+  permissions: string;
+  rateLimit: number;
+  createdAt: string;
+}
+
+export interface ApiKeyListItem {
+  id: string;
+  keyPrefix: string;
+  operatorId: string;
+  label?: string;
+  permissions: string;
+  rateLimit: number;
+  active: boolean;
+  createdAt: string;
+  lastUsedAt?: string;
+}

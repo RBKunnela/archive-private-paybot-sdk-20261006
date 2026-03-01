@@ -8,6 +8,10 @@ import type {
   RegisterResult,
   HealthResult,
   TrustLevel,
+  SignupResult,
+  LoginResult,
+  ApiKeyResult,
+  ApiKeyListItem,
 } from './types.js';
 import { getErrorMessage, PayBotApiError } from './errors.js';
 import { generateEIP3009Nonce } from './crypto.js';
@@ -408,5 +412,202 @@ export class PayBotClient {
     const whole = parts[0] ?? '0';
     const fraction = (parts[1] ?? '').padEnd(6, '0').slice(0, 6);
     return `${whole}${fraction}`.replace(/^0+/, '') || '0';
+  }
+
+  // --- Auth: static methods (pre-client-creation) ---
+
+  /**
+   * One-call signup: register -> login -> create API key -> register default bot.
+   * Returns everything needed to start using the SDK.
+   */
+  static async signup(
+    email: string,
+    password: string,
+    options?: { facilitatorUrl?: string; botId?: string }
+  ): Promise<SignupResult> {
+    const baseUrl = options?.facilitatorUrl ?? 'https://api.paybotcore.com';
+    const botId = options?.botId ?? 'default';
+
+    // 1. Register operator
+    const registerRes = await fetch(`${baseUrl}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const registerData = await registerRes.json() as Record<string, unknown>;
+    if (!registerRes.ok) {
+      throw new PayBotApiError(
+        (registerData.error as string) ?? 'Registration failed',
+        (registerData.code as string) ?? 'REGISTRATION_FAILED',
+        registerRes.status,
+        registerData.details as Record<string, unknown>,
+      );
+    }
+    const operatorId = registerData.operatorId as string;
+
+    // 2. Login to get JWT
+    const loginRes = await fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const loginData = await loginRes.json() as Record<string, unknown>;
+    if (!loginRes.ok) {
+      throw new PayBotApiError(
+        (loginData.error as string) ?? 'Login failed',
+        (loginData.code as string) ?? 'LOGIN_FAILED',
+        loginRes.status,
+      );
+    }
+    const accessToken = loginData.accessToken as string;
+
+    // 3. Create API key
+    const keyRes = await fetch(`${baseUrl}/api-keys`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ operatorId, label: 'default', permissions: 'all' }),
+    });
+    const keyData = await keyRes.json() as Record<string, unknown>;
+    if (!keyRes.ok) {
+      throw new PayBotApiError(
+        (keyData.error as string) ?? 'API key creation failed',
+        (keyData.code as string) ?? 'KEY_CREATION_FAILED',
+        keyRes.status,
+      );
+    }
+    const apiKey = keyData.key as string;
+
+    // 4. Register default bot
+    const botRes = await fetch(`${baseUrl}/bots`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': apiKey,
+      },
+      body: JSON.stringify({ botId, trustLevel: 1 }),
+    });
+    if (!botRes.ok) {
+      const botData = await botRes.json() as Record<string, unknown>;
+      throw new PayBotApiError(
+        (botData.error as string) ?? 'Bot registration failed',
+        (botData.code as string) ?? 'BOT_REGISTRATION_FAILED',
+        botRes.status,
+      );
+    }
+
+    return {
+      operatorId,
+      apiKey,
+      botId,
+      message: 'Save your API key — it is shown only once. Use it to create a PayBotClient.',
+    };
+  }
+
+  /**
+   * Login with email and password. Returns JWT tokens for management operations.
+   */
+  static async login(
+    email: string,
+    password: string,
+    options?: { facilitatorUrl?: string }
+  ): Promise<LoginResult> {
+    const baseUrl = options?.facilitatorUrl ?? 'https://api.paybotcore.com';
+
+    const res = await fetch(`${baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const data = await res.json() as Record<string, unknown>;
+    if (!res.ok) {
+      throw new PayBotApiError(
+        (data.error as string) ?? 'Login failed',
+        (data.code as string) ?? 'LOGIN_FAILED',
+        res.status,
+      );
+    }
+
+    const operator = data.operator as Record<string, unknown>;
+    return {
+      accessToken: data.accessToken as string,
+      refreshToken: data.refreshToken as string,
+      expiresIn: data.expiresIn as number,
+      operator: {
+        id: operator.id as string,
+        email: operator.email as string,
+        tier: operator.tier as string,
+        displayName: operator.displayName as string | undefined,
+      },
+    };
+  }
+
+  // --- Auth: instance methods (API key management) ---
+
+  /**
+   * Create a new API key. Requires a JWT access token from login().
+   */
+  async createApiKey(options: { label?: string; accessToken: string }): Promise<ApiKeyResult> {
+    const res = await fetch(`${this.config.facilitatorUrl}/api-keys`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${options.accessToken}`,
+      },
+      body: JSON.stringify({
+        operatorId: this.config.operatorId,
+        label: options.label,
+        permissions: 'all',
+      }),
+    });
+    const data = await res.json() as Record<string, unknown>;
+    if (!res.ok) {
+      throw new PayBotApiError(
+        (data.error as string) ?? 'API key creation failed',
+        (data.code as string) ?? 'KEY_CREATION_FAILED',
+        res.status,
+      );
+    }
+    return data as unknown as ApiKeyResult;
+  }
+
+  /**
+   * List all API keys for the operator. Returns metadata only, never raw keys.
+   */
+  async listApiKeys(accessToken: string): Promise<ApiKeyListItem[]> {
+    const res = await fetch(`${this.config.facilitatorUrl}/api-keys`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const errData = data as Record<string, unknown>;
+      throw new PayBotApiError(
+        (errData.error as string) ?? 'Failed to list API keys',
+        (errData.code as string) ?? 'LIST_KEYS_FAILED',
+        res.status,
+      );
+    }
+    return data as ApiKeyListItem[];
+  }
+
+  /**
+   * Revoke (deactivate) an API key by ID.
+   */
+  async revokeApiKey(keyId: string, accessToken: string): Promise<{ success: boolean; keyId: string; active: boolean }> {
+    const res = await fetch(`${this.config.facilitatorUrl}/api-keys/${keyId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+    const data = await res.json() as Record<string, unknown>;
+    if (!res.ok) {
+      throw new PayBotApiError(
+        (data.error as string) ?? 'Failed to revoke API key',
+        (data.code as string) ?? 'REVOKE_KEY_FAILED',
+        res.status,
+      );
+    }
+    return data as { success: boolean; keyId: string; active: boolean };
   }
 }
