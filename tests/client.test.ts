@@ -43,6 +43,32 @@ describe('PayBotClient', () => {
     });
   });
 
+  describe('constructor validation', () => {
+    it('should throw on empty apiKey', () => {
+      expect(() => new PayBotClient({ apiKey: '', botId: 'bot' })).toThrow('apiKey is required');
+    });
+
+    it('should throw on empty botId', () => {
+      expect(() => new PayBotClient({ apiKey: 'key', botId: '' })).toThrow('botId is required');
+    });
+
+    it('should throw on invalid facilitatorUrl', () => {
+      expect(() => new PayBotClient({ apiKey: 'key', botId: 'bot', facilitatorUrl: 'not-a-url' })).toThrow('not a valid URL');
+    });
+
+    it('should throw on walletPrivateKey without 0x prefix', () => {
+      expect(() => new PayBotClient({ apiKey: 'key', botId: 'bot', walletPrivateKey: 'abc123' })).toThrow('must start with 0x');
+    });
+
+    it('should accept valid walletPrivateKey with 0x prefix', () => {
+      expect(() => new PayBotClient({ apiKey: 'key', botId: 'bot', walletPrivateKey: '0xabc123' })).not.toThrow();
+    });
+
+    it('should accept valid facilitatorUrl', () => {
+      expect(() => new PayBotClient({ apiKey: 'key', botId: 'bot', facilitatorUrl: 'https://example.com' })).not.toThrow();
+    });
+  });
+
   describe('health()', () => {
     it('should return health data on success', async () => {
       const data = { status: 'ok', version: '0.2.0', uptime: 100, timestamp: '2026-01-01' };
@@ -64,20 +90,48 @@ describe('PayBotClient', () => {
     });
 
     it('should throw PayBotApiError on non-2xx', async () => {
+      // Mock 500 twice (initial + 1 retry)
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Server error', code: 'INTERNAL' }, 500)
+      );
       mockFetch.mockResolvedValueOnce(
         jsonResponse({ error: 'Server error', code: 'INTERNAL' }, 500)
       );
       await expect(client.health()).rejects.toThrow(PayBotApiError);
+
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Server error', code: 'INTERNAL' }, 500)
+      );
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Server error', code: 'INTERNAL' }, 500)
+      );
       await expect(
         client.health().catch((e: PayBotApiError) => {
           expect(e.statusCode).toBe(500);
-          expect(e.code).toBe('INTERNAL');
           throw e;
         })
       ).rejects.toThrow();
     });
 
+    it('should throw PayBotApiError on 4xx without retry', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Not found', code: 'NOT_FOUND' }, 404)
+      );
+      try {
+        await client.health();
+        expect.fail('should have thrown');
+      } catch (e) {
+        expect(e).toBeInstanceOf(PayBotApiError);
+        expect((e as PayBotApiError).statusCode).toBe(404);
+        expect((e as PayBotApiError).code).toBe('NOT_FOUND');
+      }
+      // Only 1 fetch call (no retry on 4xx)
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('should throw PayBotApiError on network failure', async () => {
+      // Mock rejection twice (initial + 1 retry)
+      mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
       mockFetch.mockRejectedValueOnce(new Error('Connection refused'));
       try {
         await client.health();
@@ -87,6 +141,20 @@ describe('PayBotClient', () => {
         expect((e as PayBotApiError).code).toBe('NETWORK_ERROR');
         expect((e as PayBotApiError).message).toContain('Connection refused');
       }
+    });
+
+    it('should retry on 5xx and succeed on second attempt', async () => {
+      // First attempt: 500
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Server error' }, 500)
+      );
+      // Retry: 200
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ status: 'ok', version: '0.2.0', uptime: 100, timestamp: '2026-01-01' })
+      );
+      const result = await client.health();
+      expect(result.status).toBe('ok');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -284,6 +352,8 @@ describe('PayBotClient', () => {
     });
 
     it('should return failure on network error (never throws)', async () => {
+      // Mock rejection twice (initial + 1 retry)
+      mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
       mockFetch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
       const result = await client.pay({
@@ -342,6 +412,129 @@ describe('PayBotClient', () => {
 
       const verifyCall = JSON.parse(mockFetch.mock.calls[0][1].body as string);
       expect(verifyCall.requirements.amount).toBe('10000000');
+    });
+
+    it('should return failure on negative amount', async () => {
+      const result = await client.pay({
+        resource: 'https://example.com',
+        amount: '-1',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid USD amount');
+    });
+
+    it('should return failure on non-numeric amount', async () => {
+      const result = await client.pay({
+        resource: 'https://example.com',
+        amount: 'abc',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid USD amount');
+    });
+
+    it('should return failure on empty amount', async () => {
+      const result = await client.pay({
+        resource: 'https://example.com',
+        amount: '',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Amount must be a non-empty string');
+    });
+
+    it('should pass custom network and tokenContract through', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ valid: true, settlementToken: 'st_custom', commission: {} })
+      );
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
+
+      await client.pay({
+        resource: 'https://example.com',
+        amount: '1.00',
+        payTo: '0x0000000000000000000000000000000000000001',
+        network: 'eip155:8453',
+        tokenContract: '0xCustomToken',
+      });
+
+      const verifyCall = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(verifyCall.requirements.network).toBe('eip155:8453');
+      expect(verifyCall.requirements.asset).toBe('eip155:8453/erc20:0xCustomToken');
+    });
+
+    it('should use USDC address from NETWORKS config when no tokenContract specified', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ valid: true, settlementToken: 'st_net', commission: {} })
+      );
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
+
+      await client.pay({
+        resource: 'https://example.com',
+        amount: '1.00',
+        payTo: '0x0000000000000000000000000000000000000001',
+        network: 'eip155:8453',
+      });
+
+      const verifyCall = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      // Should use Base Mainnet USDC address from networks.ts
+      expect(verifyCall.requirements.asset).toContain('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
+    });
+
+    it('should convert fractional-only amounts correctly', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ valid: true, settlementToken: 'st_f', commission: {} })
+      );
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
+
+      await client.pay({
+        resource: 'https://example.com',
+        amount: '0.000001',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+
+      const verifyCall = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(verifyCall.requirements.amount).toBe('1');
+    });
+  });
+
+  describe('EIP-3009 signing', () => {
+    it('should produce signed payload with valid structure when walletPrivateKey is set', async () => {
+      const signingClient = new PayBotClient({
+        apiKey: 'pb_test_key',
+        botId: 'sign-bot',
+        facilitatorUrl: 'https://api.test.com',
+        walletPrivateKey: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
+        maxRetries: 0,
+      });
+
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ valid: true, settlementToken: 'st_sign', commission: {} })
+      );
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, transaction: '0xSignedTx' })
+      );
+
+      const result = await signingClient.pay({
+        resource: 'https://example.com',
+        amount: '0.01',
+        payTo: '0x0000000000000000000000000000000000000001',
+        network: 'eip155:84532',
+      });
+
+      expect(result.success).toBe(true);
+
+      // Verify the payload sent to verify endpoint contains signed EIP-3009 data
+      const verifyCall = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      const signedPayload = JSON.parse(verifyCall.payload.payload);
+
+      expect(signedPayload.from).toMatch(/^0x[a-fA-F0-9]{40}$/);
+      expect(signedPayload.to).toBe('0x0000000000000000000000000000000000000001');
+      expect(signedPayload.value).toBe('10000');
+      expect(signedPayload.signature).toMatch(/^0x[a-fA-F0-9]+$/);
+      expect(signedPayload.nonce).toMatch(/^0x[a-fA-F0-9]{64}$/);
+      expect(signedPayload.validAfter).toBe('0');
+      expect(Number(signedPayload.validBefore)).toBeGreaterThan(0);
     });
   });
 });

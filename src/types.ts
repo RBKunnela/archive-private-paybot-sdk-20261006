@@ -6,7 +6,7 @@
 export interface PayBotConfig {
   /** PayBot API key for authentication */
   apiKey: string;
-  /** PayBot facilitator URL (default: https://facilitator.paybot.dev) */
+  /** PayBot facilitator URL (default: https://api.paybotcore.com) */
   facilitatorUrl?: string;
   /** Bot identifier */
   botId: string;
@@ -14,6 +14,10 @@ export interface PayBotConfig {
   operatorId?: string;
   /** Bot wallet private key for EIP-3009 signing (hex with 0x prefix) */
   walletPrivateKey?: string;
+  /** Maximum number of retries on network errors or 5xx responses (default: 1) */
+  maxRetries?: number;
+  /** Request timeout in milliseconds (default: 30000) */
+  timeout?: number;
 }
 
 export interface PaymentRequest {

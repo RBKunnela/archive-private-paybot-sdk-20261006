@@ -157,4 +157,28 @@ describe('createX402Handler', () => {
 
     expect(h.fetch('https://example.com')).rejects.toThrow(/exceeds auto-pay limit/);
   });
+
+  it('should parse header-based 402 format (X-Payment-Amount + X-Payment-Address)', async () => {
+    // 402 with payment info in headers only
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({}, 402, {
+        'X-Payment-Amount': '500000',
+        'X-Payment-Address': '0xHeaderAddr',
+      })
+    );
+    // verify
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ valid: true, settlementToken: 'st_h', commission: {} })
+    );
+    // settle
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ success: true, transaction: '0xTxH' })
+    );
+    // retry
+    mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }, 200));
+
+    const result = await handler.fetch('https://api.example.com/header-pay');
+    expect(result.status).toBe(200);
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+  });
 });

@@ -11,7 +11,7 @@ import type {
 } from './types.js';
 import { getErrorMessage, PayBotApiError } from './errors.js';
 import { generateEIP3009Nonce } from './crypto.js';
-import { EIP712_DOMAINS, EIP3009_TYPES } from './networks.js';
+import { EIP712_DOMAINS, EIP3009_TYPES, NETWORKS } from './networks.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 /**
@@ -36,8 +36,27 @@ import { privateKeyToAccount } from 'viem/accounts';
  */
 export class PayBotClient {
   private config: Required<Pick<PayBotConfig, 'apiKey' | 'facilitatorUrl' | 'botId' | 'operatorId'>> & { walletPrivateKey?: string };
+  private maxRetries: number;
+  private timeout: number;
 
   constructor(config: PayBotConfig) {
+    if (!config.apiKey || typeof config.apiKey !== 'string') {
+      throw new Error('PayBotClient: apiKey is required and must be a non-empty string');
+    }
+    if (!config.botId || typeof config.botId !== 'string') {
+      throw new Error('PayBotClient: botId is required and must be a non-empty string');
+    }
+    if (config.facilitatorUrl !== undefined) {
+      try {
+        new URL(config.facilitatorUrl);
+      } catch {
+        throw new Error(`PayBotClient: facilitatorUrl is not a valid URL: ${config.facilitatorUrl}`);
+      }
+    }
+    if (config.walletPrivateKey !== undefined && !config.walletPrivateKey.startsWith('0x')) {
+      throw new Error('PayBotClient: walletPrivateKey must start with 0x');
+    }
+
     this.config = {
       apiKey: config.apiKey,
       facilitatorUrl: config.facilitatorUrl ?? 'https://api.paybotcore.com',
@@ -45,10 +64,12 @@ export class PayBotClient {
       operatorId: config.operatorId ?? 'default-operator',
       walletPrivateKey: config.walletPrivateKey,
     };
+    this.maxRetries = config.maxRetries ?? 1;
+    this.timeout = config.timeout ?? 30_000;
   }
 
   /**
-   * Shared fetch wrapper that sets auth headers and throws PayBotApiError on failure.
+   * Shared fetch wrapper with auth headers, timeout, and retry on network errors / 5xx.
    */
   private async _request<T>(
     path: string,
@@ -68,41 +89,94 @@ export class PayBotClient {
       headers['Content-Type'] = 'application/json';
     }
 
-    let response: Response;
+    const fetchOptions: RequestInit = {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    };
+
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      if (attempt > 0) {
+        await this.delay(100 * Math.pow(2, attempt - 1));
+      }
+
+      let response: Response;
+      try {
+        response = await this.fetchWithTimeout(url.toString(), fetchOptions);
+      } catch (error: unknown) {
+        lastError = error;
+        continue; // retry on network errors
+      }
+
+      // Don't retry on 4xx (client errors)
+      if (response.status >= 400 && response.status < 500) {
+        const errorData = await response.json().catch(() => ({})) as Record<string, unknown>;
+        throw new PayBotApiError(
+          (errorData.error as string) ?? `HTTP ${response.status}`,
+          (errorData.code as string) ?? 'HTTP_ERROR',
+          response.status,
+          errorData.details as Record<string, unknown> | undefined
+        );
+      }
+
+      // Retry on 5xx
+      if (response.status >= 500) {
+        lastError = new PayBotApiError(
+          `HTTP ${response.status}`,
+          'HTTP_ERROR',
+          response.status
+        );
+        continue;
+      }
+
+      return response.json() as Promise<T>;
+    }
+
+    // All retries exhausted
+    if (lastError instanceof PayBotApiError) {
+      throw lastError;
+    }
+    throw new PayBotApiError(
+      `Network error: ${getErrorMessage(lastError)}`,
+      'NETWORK_ERROR',
+      0
+    );
+  }
+
+  private async fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
     try {
-      response = await fetch(url.toString(), {
-        method: options.method ?? 'GET',
-        headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-      });
+      return await fetch(url, { ...options, signal: controller.signal });
     } catch (error: unknown) {
-      throw new PayBotApiError(
-        `Network error: ${getErrorMessage(error)}`,
-        'NETWORK_ERROR',
-        0
-      );
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new PayBotApiError(
+          `Request timed out after ${this.timeout}ms`,
+          'TIMEOUT',
+          0
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
+  }
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({})) as Record<string, unknown>;
-      throw new PayBotApiError(
-        (errorData.error as string) ?? `HTTP ${response.status}`,
-        (errorData.code as string) ?? 'HTTP_ERROR',
-        response.status,
-        errorData.details as Record<string, unknown> | undefined
-      );
-    }
-
-    return response.json() as Promise<T>;
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
    * Execute a payment through the PayBot facilitator.
+   * Returns a PaymentResult with `success: false` on failure (never throws).
    */
   async pay(request: PaymentRequest): Promise<PaymentResult> {
     try {
       const network = request.network ?? 'eip155:84532';
-      const tokenContract = request.tokenContract ?? '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+      const networkConfig = NETWORKS[network];
+      const tokenContract = request.tokenContract ?? networkConfig?.usdcAddress ?? '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
       const amountBaseUnits = this.usdToBaseUnits(request.amount);
 
       const payloadString = await this.buildPaymentPayload(
@@ -111,46 +185,49 @@ export class PayBotClient {
         network
       );
 
-      const response = await fetch(`${this.config.facilitatorUrl}/verify`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.config.apiKey,
-        },
-        body: JSON.stringify({
-          botId: this.config.botId,
-          payload: {
-            x402Version: 1,
-            resource: request.resource,
-            accepted: true,
-            payload: payloadString,
-          },
-          requirements: {
-            scheme: 'exact',
-            network,
-            asset: `${network}/erc20:${tokenContract}`,
-            amount: amountBaseUnits,
-            payTo: request.payTo,
-            maxTimeoutSeconds: 300,
-          },
-        }),
-      });
+      const payloadBody = {
+        x402Version: 1,
+        resource: request.resource,
+        accepted: true,
+        payload: payloadString,
+      };
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({})) as Record<string, unknown>;
-        return {
-          success: false,
-          grossAmount: '0',
-          netAmount: '0',
-          commissionAmount: '0',
-          commissionRate: 0,
-          error: (errorData.error as string) ?? `HTTP ${response.status}`,
-          errorCode: (errorData.code as string) ?? undefined,
-          errorDetails: errorData.details as Record<string, unknown> | undefined,
-        };
+      const requirements = {
+        scheme: 'exact',
+        network,
+        asset: `${network}/erc20:${tokenContract}`,
+        amount: amountBaseUnits,
+        payTo: request.payTo,
+        maxTimeoutSeconds: 300,
+      };
+
+      // Step 1: Verify
+      let verifyData: Record<string, unknown>;
+      try {
+        verifyData = await this._request<Record<string, unknown>>('/verify', {
+          method: 'POST',
+          body: {
+            botId: this.config.botId,
+            payload: payloadBody,
+            requirements,
+          },
+        });
+      } catch (error: unknown) {
+        if (error instanceof PayBotApiError) {
+          return {
+            success: false,
+            grossAmount: '0',
+            netAmount: '0',
+            commissionAmount: '0',
+            commissionRate: 0,
+            error: error.message,
+            errorCode: error.code,
+            errorDetails: error.details,
+          };
+        }
+        throw error;
       }
 
-      const verifyData = await response.json() as Record<string, unknown>;
       const settlementToken = verifyData.settlementToken as string | undefined;
       if (!settlementToken) {
         return {
@@ -163,49 +240,34 @@ export class PayBotClient {
         };
       }
 
-      // Now settle
-      const settleResponse = await fetch(`${this.config.facilitatorUrl}/settle`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.config.apiKey,
-        },
-        body: JSON.stringify({
-          botId: this.config.botId,
-          settlementToken,
-          payload: {
-            x402Version: 1,
-            resource: request.resource,
-            accepted: true,
-            payload: payloadString,
+      // Step 2: Settle
+      let settleData: Record<string, unknown>;
+      try {
+        settleData = await this._request<Record<string, unknown>>('/settle', {
+          method: 'POST',
+          body: {
+            botId: this.config.botId,
+            settlementToken,
+            payload: payloadBody,
+            requirements: verifyData.modifiedRequirements ?? requirements,
+            commission: verifyData.commission,
           },
-          requirements: verifyData.modifiedRequirements ?? {
-            scheme: 'exact',
-            network,
-            asset: `${network}/erc20:${tokenContract}`,
-            amount: amountBaseUnits,
-            payTo: request.payTo,
-            maxTimeoutSeconds: 300,
-          },
-          commission: verifyData.commission,
-        }),
-      });
-
-      if (!settleResponse.ok) {
-        const errorData = await settleResponse.json().catch(() => ({})) as Record<string, unknown>;
-        return {
-          success: false,
-          grossAmount: '0',
-          netAmount: '0',
-          commissionAmount: '0',
-          commissionRate: 0,
-          error: (errorData.error as string) ?? `Settlement HTTP ${settleResponse.status}`,
-          errorCode: (errorData.code as string) ?? undefined,
-          errorDetails: errorData.details as Record<string, unknown> | undefined,
-        };
+        });
+      } catch (error: unknown) {
+        if (error instanceof PayBotApiError) {
+          return {
+            success: false,
+            grossAmount: '0',
+            netAmount: '0',
+            commissionAmount: '0',
+            commissionRate: 0,
+            error: error.message,
+            errorCode: error.code,
+            errorDetails: error.details,
+          };
+        }
+        throw error;
       }
-
-      const settleData = await settleResponse.json() as Record<string, unknown>;
 
       const commissionData = verifyData.commission as Record<string, unknown> | undefined;
 
@@ -336,6 +398,12 @@ export class PayBotClient {
    * Convert USD amount string to USDC base units (6 decimals).
    */
   private usdToBaseUnits(usdAmount: string): string {
+    if (!usdAmount || typeof usdAmount !== 'string') {
+      throw new Error('Amount must be a non-empty string');
+    }
+    if (!/^\d+\.?\d*$/.test(usdAmount)) {
+      throw new Error(`Invalid USD amount: ${usdAmount}`);
+    }
     const parts = usdAmount.split('.');
     const whole = parts[0] ?? '0';
     const fraction = (parts[1] ?? '').padEnd(6, '0').slice(0, 6);
