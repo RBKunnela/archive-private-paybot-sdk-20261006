@@ -22,11 +22,21 @@ Thumbs.db
 
 # === AIOS Framework (local-only, not part of app) ===
 .aios/
+!.aios/workflows/
+!.aios/data/
 .aios-core/
 squads/
 
 # === Docs (process docs, PRDs, stories, research — all go to Confluence) ===
 docs/
+!docs/roadmap/WEEK-1-QA-TEST-PLAN.md
+!docs/roadmap/PAYBOT-SDK-6WEEK-ROADMAP.md
+!docs/roadmap/PAYBOT-6WEEK-EXECUTIVE-SUMMARY.md
+!docs/roadmap/PAYBOT-SQUAD-PLAYBOOKS.md
+!docs/roadmap/PAYBOT-SDK-JIRA-IMPORT.csv
+!docs/roadmap/PAYBOT-PO-BACKLOG-REFINEMENT.md
+!docs/roadmap/WEEK-1-KICKOFF-STORIES.md
+!docs/roadmap/week-1-tasks/
 
 # === Claude Code (local agent config, not part of app) ===
 .claude/settings.local.json
