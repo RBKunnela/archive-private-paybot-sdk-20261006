@@ -498,6 +498,91 @@ describe('PayBotClient', () => {
     });
   });
 
+  describe('commissionSummary()', () => {
+    it('should return aggregated commission data', async () => {
+      const data = {
+        totalEarned: '125000',
+        pending: '25000',
+        forwarded: '90000',
+        deferred: '10000',
+        commissionRate: 0.025,
+        entryCount: 47,
+      };
+      mockFetch.mockResolvedValueOnce(jsonResponse(data));
+      const result = await client.commissionSummary();
+      expect(result).toEqual(data);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.test.com/commission/summary',
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({ 'X-API-Key': 'pb_test_key' }),
+        })
+      );
+    });
+
+    it('should throw PayBotApiError on auth failure', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401)
+      );
+      await expect(client.commissionSummary()).rejects.toThrow(PayBotApiError);
+    });
+  });
+
+  describe('commissionLedger()', () => {
+    it('should return commission entries without filters', async () => {
+      const data = [
+        {
+          id: 'cl_1',
+          txHash: '0xabc',
+          grossAmount: '51250',
+          netAmount: '50000',
+          commissionAmount: '1250',
+          commissionRate: 0.025,
+          status: 'forwarded',
+          createdAt: '2026-03-01T00:00:00Z',
+          forwardedAt: '2026-03-01T00:01:00Z',
+        },
+      ];
+      mockFetch.mockResolvedValueOnce(jsonResponse(data));
+      const result = await client.commissionLedger();
+      expect(result).toEqual(data);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.test.com/commission/ledger',
+        expect.objectContaining({ method: 'GET' })
+      );
+    });
+
+    it('should pass filter query params', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([]));
+      await client.commissionLedger({
+        status: 'pending',
+        startDate: '2026-03-01',
+        endDate: '2026-03-06',
+        limit: 10,
+        offset: 20,
+      });
+      const calledUrl = mockFetch.mock.calls[0][0] as string;
+      expect(calledUrl).toContain('status=pending');
+      expect(calledUrl).toContain('startDate=2026-03-01');
+      expect(calledUrl).toContain('endDate=2026-03-06');
+      expect(calledUrl).toContain('limit=10');
+      expect(calledUrl).toContain('offset=20');
+    });
+
+    it('should return empty array when no entries', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([]));
+      const result = await client.commissionLedger({ status: 'deferred' });
+      expect(result).toEqual([]);
+    });
+
+    it('should throw PayBotApiError on auth failure', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Unauthorized', code: 'UNAUTHORIZED' }, 401)
+      );
+      await expect(client.commissionLedger()).rejects.toThrow(PayBotApiError);
+    });
+  });
+
   describe('EIP-3009 signing', () => {
     it('should produce signed payload with valid structure when walletPrivateKey is set', async () => {
       const signingClient = new PayBotClient({

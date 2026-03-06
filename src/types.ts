@@ -133,3 +133,53 @@ export interface ApiKeyListItem {
   createdAt: string;
   lastUsedAt?: string;
 }
+
+// --- Commission types ---
+
+export interface CommissionSummary {
+  /** Total commission earned (base units) */
+  totalEarned: string;
+  /** Commission pending settlement */
+  pending: string;
+  /** Commission forwarded to collection wallet */
+  forwarded: string;
+  /** Commission deferred (below minimum threshold) */
+  deferred: string;
+  /** Commission rate as decimal (e.g. 0.025 = 2.5%) */
+  commissionRate: number;
+  /** Number of commission entries */
+  entryCount: number;
+}
+
+export interface CommissionLedgerFilter {
+  /** Filter by status: pending, forwarded, deferred */
+  status?: 'pending' | 'forwarded' | 'deferred';
+  /** Start date (ISO 8601) */
+  startDate?: string;
+  /** End date (ISO 8601) */
+  endDate?: string;
+  /** Maximum entries to return (default: 50) */
+  limit?: number;
+  /** Offset for pagination */
+  offset?: number;
+}
+
+export interface CommissionEntry {
+  id: string;
+  /** Related payment transaction hash */
+  txHash: string;
+  /** Gross payment amount (base units) */
+  grossAmount: string;
+  /** Net amount after commission (base units) */
+  netAmount: string;
+  /** Commission amount (base units) */
+  commissionAmount: string;
+  /** Commission rate applied */
+  commissionRate: number;
+  /** Entry status */
+  status: 'pending' | 'forwarded' | 'deferred';
+  /** When this entry was created */
+  createdAt: string;
+  /** When commission was forwarded (if applicable) */
+  forwardedAt?: string;
+}

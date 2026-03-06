@@ -18,6 +18,9 @@ export type {
   LoginResult,
   ApiKeyResult,
   ApiKeyListItem,
+  CommissionSummary,
+  CommissionLedgerFilter,
+  CommissionEntry,
 } from './types.js';
 export type { NetworkConfig } from './networks.js';
 export {

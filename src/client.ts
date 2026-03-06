@@ -12,6 +12,9 @@ import type {
   LoginResult,
   ApiKeyResult,
   ApiKeyListItem,
+  CommissionSummary,
+  CommissionLedgerFilter,
+  CommissionEntry,
 } from './types.js';
 import { getErrorMessage, PayBotApiError } from './errors.js';
 import { generateEIP3009Nonce } from './crypto.js';
@@ -412,6 +415,31 @@ export class PayBotClient {
     const whole = parts[0] ?? '0';
     const fraction = (parts[1] ?? '').padEnd(6, '0').slice(0, 6);
     return `${whole}${fraction}`.replace(/^0+/, '') || '0';
+  }
+
+  // --- Commission queries ---
+
+  /**
+   * Get aggregated commission summary (total earned, pending, forwarded, deferred).
+   * Throws PayBotApiError on non-2xx responses.
+   */
+  async commissionSummary(): Promise<CommissionSummary> {
+    return this._request<CommissionSummary>('/commission/summary');
+  }
+
+  /**
+   * Get paginated commission ledger entries with optional filters.
+   * Throws PayBotApiError on non-2xx responses.
+   */
+  async commissionLedger(filters?: CommissionLedgerFilter): Promise<CommissionEntry[]> {
+    const query: Record<string, string> = {};
+    if (filters?.status) query.status = filters.status;
+    if (filters?.startDate) query.startDate = filters.startDate;
+    if (filters?.endDate) query.endDate = filters.endDate;
+    if (filters?.limit !== undefined) query.limit = String(filters.limit);
+    if (filters?.offset !== undefined) query.offset = String(filters.offset);
+
+    return this._request<CommissionEntry[]>('/commission/ledger', { query });
   }
 
   // --- Auth: static methods (pre-client-creation) ---

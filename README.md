@@ -2,6 +2,23 @@
 
 USDC payments for bots via the [x402 protocol](https://www.x402.org/). One dependency (`viem`), 7 files, typed everything.
 
+## Key Features
+
+- **One dependency** (`viem`), 7 files, fully typed
+- **Simple API** — register your bot and make payments in 2 lines of code
+- **Network support** — Base and Base Sepolia (EIP155)
+- **Mock mode** for testing without real transactions
+- **MCP integration** — works with AI agent frameworks via [`paybot-mcp`](https://github.com/RBKunnela/paybot-mcp)
+- **Self-hostable** facilitator service
+
+## Architecture
+
+```
+PayBotClient → Facilitator (x402) → On-chain USDC (EIP-3009)
+```
+
+The SDK wraps payment logic for bots, handling registration, payment execution, and network configuration. Developers can use the hosted facilitator at `api.paybotcore.com` or run their own.
+
 ## Install
 
 ```bash
