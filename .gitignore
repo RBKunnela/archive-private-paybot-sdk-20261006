@@ -37,6 +37,11 @@ docs/
 !docs/roadmap/PAYBOT-PO-BACKLOG-REFINEMENT.md
 !docs/roadmap/WEEK-1-KICKOFF-STORIES.md
 !docs/roadmap/week-1-tasks/
+!docs/SPRINT-PLANNING-WEEK-1.md
+!docs/KICKOFF-PRESENTATION.md
+!docs/EPIC-2-SDK-AUTH-LIFECYCLE.md
+!docs/EPIC-2-INDEX.md
+!docs/IMPLEMENTATION-STATUS-GAPS-ANALYSIS.md
 
 # === Claude Code (local agent config, not part of app) ===
 .claude/settings.local.json
