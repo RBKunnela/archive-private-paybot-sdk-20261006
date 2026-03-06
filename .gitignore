@@ -24,7 +24,9 @@ Thumbs.db
 .aios/
 .aios-core/
 squads/
-docs/research/
+
+# === Docs (process docs, PRDs, stories, research — all go to Confluence) ===
+docs/
 
 # === Claude Code (local agent config, not part of app) ===
 .claude/settings.local.json
