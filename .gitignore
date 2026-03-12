@@ -54,3 +54,15 @@ IMPLEMENTATION-COMPLETE.md
 .codex/
 .cursor/
 .gemini/
+.*/
+
+# === EXCEPTION: Keep these dot folders (needed for app) ===
+!.git/
+!.github/
+!.gitignore
+
+# === Local config files (not needed for app) ===
+pro-installed-manifest.yaml
+pro-version.json
+readme-epic-6.md
+AGENTS.md.backup*
