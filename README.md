@@ -149,25 +149,41 @@ console.log(baseSepolia?.name); // 'Base Sepolia'
 
 For AI agent frameworks, use [paybot-mcp](https://github.com/RBKunnela/paybot-mcp) which wraps this SDK as an MCP server.
 
-## Self-Hosting
+## Deployment Options
 
-Run your own PayBot facilitator:
+### Option 1: Hosted (Recommended)
+
+Use the hosted facilitator at `api.paybotcore.com` — no setup needed, ready to go:
+
+```typescript
+const client = new PayBotClient({
+  apiKey: 'pb_test_...',
+  botId: 'my-bot',
+  facilitatorUrl: 'https://api.paybotcore.com',  // ← Hosted
+});
+```
+
+### Option 2: Self-Hosted with Docker
+
+For enterprise bots or custom networks, deploy your own PayBot facilitator with Docker:
 
 ```bash
 git clone https://github.com/RBKunnela/paybot.git
 cd paybot
-npm install && npm run build && npm start
+docker compose up -d
 ```
 
 Then point your SDK at it:
 
 ```typescript
 const client = new PayBotClient({
-  apiKey: 'your-key',
+  apiKey: 'pb_dev_...',
   botId: 'my-bot',
-  facilitatorUrl: 'http://localhost:3000',
+  facilitatorUrl: 'http://localhost:3000',  // ← Self-hosted
 });
 ```
+
+**Full deployment guide**: See [DEPLOYMENT.md](https://github.com/RBKunnela/paybot/blob/main/DEPLOYMENT.md) in paybot-core repository.
 
 ## License
 
