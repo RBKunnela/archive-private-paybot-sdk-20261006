@@ -12,6 +12,7 @@ build/
 .env
 .env.*
 !.env.example
+*.backup.*
 
 # === OS files ===
 .DS_Store
@@ -27,21 +28,15 @@ Thumbs.db
 .aios-core/
 squads/
 
-# === Docs (process docs, PRDs, stories, research — all go to Confluence) ===
+# === Documentation (all process docs, research, epics, deployments — go to Confluence) ===
 docs/
-!docs/roadmap/WEEK-1-QA-TEST-PLAN.md
-!docs/roadmap/PAYBOT-SDK-6WEEK-ROADMAP.md
-!docs/roadmap/PAYBOT-6WEEK-EXECUTIVE-SUMMARY.md
-!docs/roadmap/PAYBOT-SQUAD-PLAYBOOKS.md
-!docs/roadmap/PAYBOT-SDK-JIRA-IMPORT.csv
-!docs/roadmap/PAYBOT-PO-BACKLOG-REFINEMENT.md
-!docs/roadmap/WEEK-1-KICKOFF-STORIES.md
-!docs/roadmap/week-1-tasks/
-!docs/SPRINT-PLANNING-WEEK-1.md
-!docs/KICKOFF-PRESENTATION.md
-!docs/EPIC-2-SDK-AUTH-LIFECYCLE.md
-!docs/EPIC-2-INDEX.md
-!docs/IMPLEMENTATION-STATUS-GAPS-ANALYSIS.md
+AGENTS.md
+DELIVERABLES-VERIFICATION.txt
+DEPLOYMENT-PACKAGE-ALL-PROJECTS.md
+DEPLOY-TO-OTHER-PROJECTS.md
+EPIC-*.md
+FINAL-DEPLOYMENT-SUMMARY.md
+IMPLEMENTATION-COMPLETE.md
 
 # === Claude Code (local agent config, not part of app) ===
 .claude/settings.local.json
@@ -50,7 +45,12 @@ docs/
 .claude/rules/
 .claude/agents/
 
-# === IDE ===
+# === Local IDE & tools ===
 .vscode/
 .idea/
 *.code-workspace
+.agent/
+.antigravity/
+.codex/
+.cursor/
+.gemini/
