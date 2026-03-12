@@ -165,15 +165,15 @@ const client = new PayBotClient({
 
 ### Option 2: Self-Hosted with Docker
 
-For enterprise bots or custom networks, deploy your own PayBot facilitator with Docker:
+For enterprise bots or custom networks, deploy your own PayBot facilitator with Docker (5 minutes):
 
 ```bash
-git clone https://github.com/RBKunnela/paybot.git
-cd paybot
+git clone https://github.com/RBKunnela/paybot-core.git
+cd paybot-core
 docker compose up -d
 ```
 
-Then point your SDK at it:
+Then configure your bot:
 
 ```typescript
 const client = new PayBotClient({
@@ -183,7 +183,9 @@ const client = new PayBotClient({
 });
 ```
 
-**Full deployment guide**: See [DEPLOYMENT.md](https://github.com/RBKunnela/paybot/blob/main/DEPLOYMENT.md) in paybot-core repository.
+**Quick start guide**: See [SELF_HOSTING.md](./SELF_HOSTING.md) in this repository.
+
+**Full deployment guide**: See [DEPLOYMENT.md](https://github.com/RBKunnela/paybot-core/blob/main/DEPLOYMENT.md) in paybot-core repository.
 
 ## License
 
