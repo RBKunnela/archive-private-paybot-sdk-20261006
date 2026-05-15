@@ -1,1 +1,0 @@
-paybot_sdk
