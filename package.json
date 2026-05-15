@@ -55,7 +55,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@rollup/rollup-win32-x64-msvc": "^4.59.0",
     "viem": "^2.46.2"
   },
   "devDependencies": {
