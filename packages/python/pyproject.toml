@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paybot-sdk"
+version = "0.1.0a1"
+description = "Python port of paybot-sdk — USDC payments for AI agents via the x402 protocol."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "PayBot Contributors" },
+]
+keywords = ["x402", "agent-payments", "usdc", "base", "ai-agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "httpx>=0.27,<1.0",
+]
+
+[project.optional-dependencies]
+signing = [
+    # Runtime ships in 0.1.0; pinned here so consumers can install signing-ready
+    # extras now, even though _sign_payload raises in this scaffold.
+    "eth-account>=0.13,<1.0",
+    "eth-typing>=4,<6",
+]
+mcp = [
+    # Will be required by the MCP integration mirror of paybot-mcp; not used yet.
+    "mcp>=0.5,<1.0",
+]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",  # httpx mock for the test suite
+]
+
+[project.urls]
+Homepage = "https://github.com/RBKunnela/paybot-sdk"
+Issues = "https://github.com/RBKunnela/paybot-sdk/issues"
+
+[tool.setuptools.packages.find]
+include = ["paybot_sdk*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
