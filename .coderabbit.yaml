@@ -1,0 +1,55 @@
+language: "en-US"
+tone_instructions: "Be direct and technical. Focus on correctness, security, and SDK ergonomics. This is a TypeScript SDK for AI agent payments (x402 protocol, USDC on Base). Reviewers should understand EIP-3009, facilitator patterns, and trust level models."
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: true
+  high_level_summary: true
+  high_level_summary_placeholder: "@coderabbitai summary"
+  auto_title_placeholder: "@coderabbitai"
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  sequence_diagrams: true
+
+  path_instructions:
+    - path: "src/**/*.ts"
+      instructions: |
+        Review TypeScript SDK code for:
+        - Type safety and correct use of viem types
+        - EIP-3009 signing correctness (TransferWithAuthorization)
+        - Trust level boundary enforcement (levels 0-5)
+        - Error handling for network/facilitator failures
+        - No hardcoded private keys, secrets, or wallet addresses
+        - x402 protocol compliance (HTTP 402 → pay → retry flow)
+    - path: "packages/python/**"
+      instructions: |
+        Review Python port for:
+        - Functional parity with TypeScript SDK (same interface shape)
+        - web3.py + eth_account signing correctness
+        - Type hints throughout (Python 3.10+)
+        - Async-first design (asyncio)
+        - pyproject.toml packaging correctness
+    - path: "examples/**"
+      instructions: |
+        Review examples for clarity and correctness:
+        - Must work with both hosted (api.paybotcore.com) and self-hosted facilitator
+        - No hardcoded private keys in examples (use env vars)
+        - Each example should be self-contained and runnable
+    - path: "tests/**"
+      instructions: |
+        Review tests for:
+        - Coverage of payment flow edge cases (402 retry, balance insufficient, timeout)
+        - Mock mode testing (no real on-chain transactions in unit tests)
+        - Integration tests should be clearly marked and gated
+
+  auto_review:
+    enabled: true
+    drafts: true
+    base_branches:
+      - "main"
+      - "develop"
+
+chat:
+  auto_reply: true
