@@ -163,7 +163,14 @@ class PayBotClient:
                 )
                 continue
 
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                raise PayBotApiError(
+                    f"Invalid JSON in 2xx response from facilitator: {e}",
+                    "INVALID_RESPONSE",
+                    response.status_code,
+                )
 
         if isinstance(last_error, PayBotApiError):
             raise last_error

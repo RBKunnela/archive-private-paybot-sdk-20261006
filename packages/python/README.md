@@ -62,7 +62,7 @@ gets the same surface they'd have on the TS side.
 - `_sign_payload()` runtime — EIP-712 typed-data signing with `eth-account`
 - `middleware.py` port
 - `x402_handler.py` port
-- Full integration test suite (right now `tests/` has type-surface tests only)
+- Full integration test suite against the live facilitator (current `tests/` covers type surface, constructor validation, base-unit conversion, EIP-3009 nonce shape, and `NETWORKS` parity with TS — no live-network integration tests yet)
 
 ## Review focus for this PR
 
