@@ -21,6 +21,11 @@ export type {
   CommissionSummary,
   CommissionLedgerFilter,
   CommissionEntry,
+  AgentIdentity,
+} from './types.js';
+export {
+  agentIdentityFromConfig,
+  agentIdentityFromRegisterResult,
 } from './types.js';
 export type { NetworkConfig } from './networks.js';
 export {

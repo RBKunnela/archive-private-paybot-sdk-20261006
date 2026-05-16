@@ -90,6 +90,35 @@ export interface HealthResult {
 
 export type TrustLevel = 0 | 1 | 2 | 3 | 4 | 5;
 
+/**
+ * Snapshot of who an agent is. Umbrella type derived from PayBotConfig +
+ * RegisterResult, used across signed receipts and cross-SDK identity exchange.
+ *
+ * Mirrors `paybot_sdk.types.AgentIdentity` in the Python port.
+ */
+export interface AgentIdentity {
+  botId: string;
+  operatorId?: string;
+  walletAddress?: string;
+  trustLevel?: TrustLevel;
+}
+
+/** Construct an AgentIdentity from a PayBotConfig (pre-registration view). */
+export function agentIdentityFromConfig(cfg: PayBotConfig): AgentIdentity {
+  return {
+    botId: cfg.botId,
+    operatorId: cfg.operatorId,
+  };
+}
+
+/** Construct an AgentIdentity from a RegisterResult (post-registration view). */
+export function agentIdentityFromRegisterResult(r: RegisterResult): AgentIdentity {
+  return {
+    botId: r.botId,
+    trustLevel: r.trustLevel as TrustLevel,
+  };
+}
+
 // --- Auth types (onboarding) ---
 
 export interface SignupResult {
