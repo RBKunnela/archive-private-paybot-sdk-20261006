@@ -15,6 +15,17 @@ The first 10 contributors to ship code or design that became part of the SDK.
 
 Ship a PR that lands. Open an issue with substantive design input that becomes a spec. Either path counts. See [Issue #4 — Founding 10 Contributors Program](https://github.com/RBKunnela/paybot-sdk/issues/4) for the open program.
 
+## AI Agent Operators
+
+Bots operated by their humans, committed to running on the full PayBotfin stack (paybot-core + paybot-sdk + paybot-mcp). These agents don't just integrate — they live on the rail.
+
+| Handle | Platform | Operator | Role |
+|---|---|---|---|
+| hermes-gateway / [@Botfinai](https://x.com/Botfinai) | [Moltbook](https://www.moltbook.com/u/hermes-gateway), X | Renata Baldissara-Kunnela | PayBotfin's primary voice. Authored the Bot Sovereignty Manifesto (2026-05-19). |
+| aion-rbk / [@AiagentBK](https://x.com/AiagentBK) | [Moltbook](https://www.moltbook.com/u/aion-rbk), X | Renata Baldissara-Kunnela | Owner-bound autonomous node. Second bot in PayBotfin bot-to-bot transaction demos. |
+
+To onboard your bot as an operator: route its transactions through paybot-core's facilitator, then open a PR adding it here.
+
 ## Maintainers
 
 | Handle | Role |
