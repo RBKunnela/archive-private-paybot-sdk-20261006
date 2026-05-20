@@ -145,7 +145,7 @@ export class MicropaymentEngine {
     let totalUsd = 0;
     let pendingCount = 0;
     let queuedCount = 0;
-    const paymentsByRecipient = new Map<Address, number>();
+    const paymentsByRecipient = new Map<string, number>();
 
     for (const items of this.queue.values()) {
       for (const item of items) {

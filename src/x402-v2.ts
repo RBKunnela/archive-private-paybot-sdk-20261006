@@ -18,7 +18,6 @@ import type {
   SignedPayment,
   Receipt,
   PaymentRequiredResponse,
-  PaymentIntentHeader,
   PaymentRequirements,
 } from './types.js';
 import { getErrorMessage, PayBotApiError } from './errors.js';
@@ -232,7 +231,7 @@ export class X402Handler {
         primaryType: 'PaymentAuthorization',
         message: {
           payer: account.address,
-          recipient: requirements.payTo,
+          recipient: requirements.payTo as `0x${string}`,
           amount: BigInt(requirements.amount),
           nonce,
           expires: nowSeconds + BigInt(3600),
@@ -440,9 +439,10 @@ export class X402Handler {
    */
   static negotiatePaymentIntent(
     requirements: PaymentRequirements,
-    supportedProtocols: ('x402' | 'mpp' | 'dual')[] = ['x402', 'mpp']
+    _supportedProtocols: ('x402' | 'mpp' | 'dual')[] = ['x402', 'mpp']
   ): PaymentIntent {
     // Select protocol - default to dual-mode for compatibility
+    // TODO: honor `_supportedProtocols` once negotiation policy is finalized.
     const protocol = 'dual';
 
     return {
