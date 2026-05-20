@@ -16,13 +16,14 @@
  * - Google Cloud Pay.sh
  */
 
+import { webcrypto } from 'node:crypto';
 import type { Address, Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import type { 
+import type {
   MicropaymentQueueItem,
   BatchedSettlement,
   SettlementOptions,
-  BatchStatistics 
+  BatchStatistics
 } from './types.js';
 
 /**
@@ -339,7 +340,7 @@ export class MicropaymentEngine {
 
   private generateNonce(): string {
     const buf = new Uint8Array(32);
-    crypto.getRandomValues(buf);
+    webcrypto.getRandomValues(buf);
     return Array.from(buf)
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
