@@ -229,7 +229,7 @@ export class MicropaymentEngine {
       name: 'PayBot',
       version: '1',
       chainId: 8453,
-      verifyingContract: '0x50b0f7224fFc5f4f7685DbcE1B8b7E7B8B8A4A23' as Address,
+      verifyingContract: '0x50b0f7224fFC5F4F7685DbcE1B8b7e7B8b8A4A23' as Address,
     };
 
     const nonce = this.generateNonce() as `0x${string}`;
@@ -338,11 +338,12 @@ export class MicropaymentEngine {
     return `${whole}${fraction}`.replace(/^0+/, '') || '0';
   }
 
-  private generateNonce(): string {
+  private generateNonce(): `0x${string}` {
     const buf = new Uint8Array(32);
     webcrypto.getRandomValues(buf);
-    return Array.from(buf)
+    const hex = Array.from(buf)
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
+    return `0x${hex}`;
   }
 }
