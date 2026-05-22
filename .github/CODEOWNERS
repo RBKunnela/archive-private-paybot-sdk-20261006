@@ -1,0 +1,4 @@
+# CODEOWNERS for paybot-sdk
+# Solo-founder phase: paths default to operator, with specialized reviewers where applicable.
+* @RBKunnela
+/packages/python/ @RBKunnela @kite-builds

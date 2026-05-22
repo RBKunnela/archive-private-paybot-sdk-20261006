@@ -45,3 +45,27 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+
+  # ---------- Python (uv) ecosystem ----------
+  # Targets packages/python/ where pyproject.toml + uv.lock live.
+  # Ecosystem note: Dependabot's `uv` package-manager directly understands
+  # uv.lock and pyproject.toml — confirmed live on this repo by the
+  # pre-existing security update PR #12 (mcp 0.9.1 → 1.23.0) which was
+  # auto-opened by Dependabot under `package-manager=uv`. Using `pip` here
+  # would only cover pyproject.toml manifests and miss lockfile-pinned
+  # transitive deps. The `uv` ecosystem is the correct match for the
+  # lockfile format present.
+  - package-ecosystem: "uv"
+    directory: "/packages/python"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"

@@ -53,7 +53,11 @@ permissions:
 jobs:
   scan:
     # AP #2: exact tag, not `@v2` major alias.
-    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.2.1"
+    # SHA-pinned per supply-chain hygiene policy (paybot-sdk PR #11 CodeRabbit
+    # MAJOR-level guidance). The reusable-workflow `uses:` form accepts a SHA
+    # in place of a tag. Adjacent version comment marks the floating-tag intent
+    # so Dependabot github-actions can offer upgrades.
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@456ceb78310755116e0a3738121351006286b797"  # v2.2.1
     with:
       scan-args: |-
         --recursive
