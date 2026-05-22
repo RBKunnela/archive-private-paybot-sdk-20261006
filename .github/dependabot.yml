@@ -1,0 +1,47 @@
+# Dependabot — automated dependency PRs for paybot-sdk
+#
+# What:    Weekly version-update PRs for npm packages and GitHub Actions.
+#          Security updates (CVE fixes) are auto-enabled separately via the
+#          /repos/{owner}/{repo}/automated-security-fixes API and surface
+#          regardless of the schedule below.
+# Why:     Keep supply chain current; minimize lag between CVE disclosure and patch.
+#          paybot-sdk is published to npm — downstream consumer surface area
+#          makes timely security patching especially load-bearing.
+# Gate:    PRs run through CI + the SINKRA chain. @qa flags risk, @devops merges.
+#
+# Reference:
+#   - https://docs.github.com/en/code-security/dependabot
+#   - Precedent: paybot-core PR #3 (merged 6dc6f5aa, 2026-05-22)
+version: 2
+updates:
+  # ---------- npm ecosystem ----------
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "npm"
+
+  # ---------- GitHub Actions ecosystem ----------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"

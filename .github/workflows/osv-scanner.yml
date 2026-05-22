@@ -1,0 +1,64 @@
+# OSV-Scanner — vulnerability scanning against Google's OSV.dev database
+#
+# What:    Scans lockfiles + manifests against the Open Source Vulnerabilities
+#          database. Broader coverage than Dependabot alone (npm advisories +
+#          GHSA + GitHub-specific feeds + ecosystem-specific feeds).
+# When:    On PRs targeting main, on push to main, and weekly (Tuesday 06:00 UTC).
+#          Tuesday cadence intentionally offsets from CodeQL (Monday) to spread
+#          CI load and produce two independent weekly signals.
+# Output:  SARIF uploaded natively to GitHub Code Scanning (Security tab).
+#          Public repo: third-party SARIF upload is free (no GHAS needed).
+#          Contrast with paybot-core (private personal-account) which required
+#          `upload-sarif: false` — see paybot-core PR #3.
+# Gate:    Failed scans block PR via branch protection once added to required
+#          status checks (verbatim context name from `gh pr checks` after
+#          first run).
+#
+# Note on design: we use the single (non-PR-diff) reusable workflow for ALL
+#                 events. The PR-diff reusable variant requires both branches
+#                 to have scannable lockfiles to compute a diff, which is
+#                 brittle for short-lived branches. The full-scan flavor is
+#                 more robust and gives identical signal for our gating purposes.
+#
+# Anti-patterns avoided (from paybot-core PR #3):
+#   - AP #2: OSV-Scanner publishes only EXACT version tags. `@v2` is NOT a
+#            valid alias — must pin to `@v2.2.1` (Dependabot github-actions
+#            will surface upgrades).
+#   - AP #3: Reusable-workflow callers cannot set per-job `permissions:`
+#            overrides — they are silently dropped. Permissions MUST be at
+#            workflow level (top of file, before `jobs:`).
+#
+# Reference:
+#   - https://github.com/google/osv-scanner-action
+#   - Precedent: paybot-core PR #3 (merged 6dc6f5aa, 2026-05-22)
+name: OSV-Scanner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Tuesday 06:00 UTC — offset from CodeQL (Monday) to spread CI load
+    - cron: '0 6 * * 2'
+
+# Workflow-level permissions are inherited by reusable workflow calls.
+# Per-job `permissions:` on a reusable-workflow `uses:` is silently dropped
+# (paybot-core PR #3, AP #3).
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    # AP #2: exact tag, not `@v2` major alias.
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.2.1"
+    with:
+      scan-args: |-
+        --recursive
+        --skip-git
+        ./
+      # Public repo: SARIF upload to Security tab is free (no GHAS needed).
+      # `upload-sarif: true` is the default; declared explicitly for clarity.
+      upload-sarif: true

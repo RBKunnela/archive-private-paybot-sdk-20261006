@@ -1,0 +1,65 @@
+# CodeQL — SAST (Static Application Security Testing) for paybot-sdk
+#
+# What:    GitHub's CodeQL engine analyzing JavaScript/TypeScript for SQL
+#          injection, unsafe regex, hardcoded crypto, taint flows, and other
+#          security issues.
+# When:    On PRs targeting main, on push to main, and weekly (Monday 06:00 UTC).
+# Output:  SARIF results uploaded natively to GitHub Code Scanning (Security tab).
+#          Public repo: SARIF upload to Security tab is free (no GHAS needed).
+#          Contrast with paybot-core (private personal-account) which required
+#          `upload: false` + artifact workaround — see paybot-core PR #3.
+# Gate:    Failed scans (any error severity finding) fail the job → PR blocked
+#          via branch protection once required_status_checks is updated to
+#          include "Analyze (javascript-typescript)" (verbatim from
+#          `gh pr checks` after first run).
+#
+# Reference:
+#   - https://docs.github.com/en/code-security/code-scanning
+#   - Precedent: paybot-core PR #3 (merged 6dc6f5aa, 2026-05-22)
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Monday 06:00 UTC — weekly scheduled scan independent of PR activity
+    - cron: '0 6 * * 1'
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          # Public repo: SARIF upload to Security tab is free (no GHAS needed).
+          # `upload: true` is the default; declared explicitly for clarity.
+          upload: true
