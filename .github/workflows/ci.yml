@@ -37,6 +37,17 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Coverage gate
+        run: npm run coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: coverage-report-node-${{ matrix.node-version }}
+          path: coverage/
+          retention-days: 14
+
       - name: Build
         run: npm run build
 
