@@ -15,6 +15,8 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.template
+!.env.sample
 *.backup.*
 
 # === OS files ===
@@ -69,3 +71,67 @@ pro-installed-manifest.yaml
 pro-version.json
 readme-epic-6.md
 AGENTS.md.backup*
+
+# ─────────────────────────────────────────────────────────────
+# AIOX secret-hygiene hardening — added 2026-05-22 by @devops
+# Per operator directive (public-repo exposure prevention).
+# ─────────────────────────────────────────────────────────────
+
+# Environment files (extra)
+.envrc
+.direnv/
+
+# Secret stores — cert + key material
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.der
+secrets/
+secrets.json
+credentials.json
+credentials/
+.credentials/
+
+# Provider-specific token files
+.npmrc
+.yarnrc
+.yarnrc.yml
+!.yarnrc.example
+.netrc
+.aws/
+.gcp/
+service-account*.json
+gcp-key*.json
+*-sa.json
+firebase-debug.log
+
+# Local config that often holds secrets
+config.local.*
+config.*.local
+local.config.*
+*.local.json
+*.local.yaml
+*.local.yml
+
+# IDE secrets (explicit; .idea/ already broadly ignored)
+.vscode/settings.local.json
+.idea/dataSources.local.xml
+.idea/dataSources.xml
+.idea/sqldialects.xml
+
+# OS / editor temp that can hold pasted secrets
+*.bak
+*.tmp
+
+# AI/agent tool dumps that may include conversation w/ keys
+.aiox/
+.aiox/handoffs/*.yaml
+!.aiox/handoffs/LATEST.md
+
+# Build artifacts that might inline secrets at build time
+.next/cache/**
+dist-local/
+
