@@ -29,6 +29,29 @@ updates:
     labels:
       - "dependencies"
       - "npm"
+    # Groups: batch alert waves so a solo operator can absorb them.
+    # Without grouping, a typical Monday wave is ~15-20 individual PRs per repo;
+    # grouped it's 3-5. Production patch/minor split keeps risk-tiers separate.
+    # Dev deps batched freely (no runtime exposure). Security updates split by
+    # severity so a critical CVE never gets bundled with a minor upgrade.
+    groups:
+      npm-patch-prod:
+        applies-to: version-updates
+        update-types: ["patch"]
+        dependency-type: "production"
+      npm-minor-prod:
+        applies-to: version-updates
+        update-types: ["minor"]
+        dependency-type: "production"
+      npm-dev-deps:
+        applies-to: version-updates
+        dependency-type: "development"
+      npm-security-patch:
+        applies-to: security-updates
+        update-types: ["patch"]
+      npm-security-minor:
+        applies-to: security-updates
+        update-types: ["minor"]
 
   # ---------- GitHub Actions ecosystem ----------
   - package-ecosystem: "github-actions"
@@ -69,3 +92,21 @@ updates:
     labels:
       - "dependencies"
       - "python"
+    # Groups: parallel batching to the npm block above. uv does not expose
+    # the `dependency-type: production|development` axis the same way npm
+    # does (uv uses dependency-groups in pyproject.toml), so groups are
+    # split by update-types alone. Security updates split by severity to
+    # keep critical CVEs unbundled.
+    groups:
+      uv-patch:
+        applies-to: version-updates
+        update-types: ["patch"]
+      uv-minor:
+        applies-to: version-updates
+        update-types: ["minor"]
+      uv-security-patch:
+        applies-to: security-updates
+        update-types: ["patch"]
+      uv-security-minor:
+        applies-to: security-updates
+        update-types: ["minor"]
