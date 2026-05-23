@@ -32,7 +32,7 @@ signing = [
     # Runtime ships in 0.1.0; pinned here so consumers can install signing-ready
     # extras now, even though _sign_payload raises in this scaffold.
     "eth-account>=0.13,<1.0",
-    "eth-typing>=4,<6",
+    "eth-typing>=6.0.0,<7",
 ]
 mcp = [
     # Will be required by the MCP integration mirror of paybot-mcp; not used yet.
