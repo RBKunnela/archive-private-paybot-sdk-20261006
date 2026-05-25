@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 CommissionStatus = Literal["pending", "forwarded", "deferred"]
 TrustLevel = Literal[0, 1, 2, 3, 4, 5]
+ReceiptSignerRole = Literal["facilitator", "payer"]
 
 
 @dataclass
@@ -48,6 +49,63 @@ class PaymentResult:
     error: Optional[str] = None
     error_code: Optional[str] = None
     error_details: Optional[Dict[str, Any]] = None
+    signed_receipt: Optional["SignedReceipt"] = None
+
+
+@dataclass
+class ReceiptAgent:
+    bot_id: str
+    wallet_address: Optional[str] = None
+    service_card_ref: Optional[str] = None
+
+
+@dataclass
+class ReceiptCapability:
+    id: str
+    descriptor: Optional[str] = None
+    request_hash: Optional[str] = None
+
+
+@dataclass
+class ReceiptSettlement:
+    tx_hash: str
+    network: str
+    gross_amount: str
+    net_amount: str
+    timestamp: str
+
+
+@dataclass
+class ReceiptArtifact:
+    hash: str
+    content_type: Optional[str] = None
+    uri: Optional[str] = None
+
+
+@dataclass
+class ReceiptReputationPointer:
+    registry_uri: str
+    payee_record_id: Optional[str] = None
+
+
+@dataclass
+class UnsignedReceipt:
+    version: Literal["1.0"]
+    receipt_id: str
+    payer: ReceiptAgent
+    payee: ReceiptAgent
+    capability: ReceiptCapability
+    settlement: ReceiptSettlement
+    signed_by: ReceiptSignerRole
+    artifact: Optional[ReceiptArtifact] = None
+    reputation: Optional[ReceiptReputationPointer] = None
+    signer_address: Optional[str] = None
+
+
+@dataclass
+class SignedReceipt(UnsignedReceipt):
+    signer_address: str = ""
+    signature: str = ""
 
 
 @dataclass

@@ -6,6 +6,7 @@ the `x402_handler` factory will be re-exported from here too.
 from .client import PayBotClient
 from .errors import PayBotApiError, get_error_message
 from .networks import EIP712_DOMAINS, EIP3009_TYPES, NETWORKS, NetworkConfig
+from .receipts import canonicalize, receipt_signing_payload, sign_receipt, verify_receipt
 from .types import (
     ApiKeyListItem,
     ApiKeyResult,
@@ -21,10 +22,18 @@ from .types import (
     PayBotConfig,
     PaymentRequest,
     PaymentResult,
+    ReceiptAgent,
+    ReceiptArtifact,
+    ReceiptCapability,
+    ReceiptReputationPointer,
+    ReceiptSettlement,
+    ReceiptSignerRole,
     RegisterResult,
+    SignedReceipt,
     SignupResult,
     TransactionHistoryItem,
     TrustLevel,
+    UnsignedReceipt,
 )
 
 __version__ = "0.1.0a1"  # scaffold release; runtime in 0.1.0
@@ -33,6 +42,10 @@ __all__ = [
     "PayBotClient",
     "PayBotApiError",
     "get_error_message",
+    "canonicalize",
+    "receipt_signing_payload",
+    "sign_receipt",
+    "verify_receipt",
     "NETWORKS",
     "NetworkConfig",
     "EIP712_DOMAINS",
@@ -40,6 +53,14 @@ __all__ = [
     "PayBotConfig",
     "PaymentRequest",
     "PaymentResult",
+    "ReceiptSignerRole",
+    "ReceiptAgent",
+    "ReceiptCapability",
+    "ReceiptSettlement",
+    "ReceiptArtifact",
+    "ReceiptReputationPointer",
+    "UnsignedReceipt",
+    "SignedReceipt",
     "BalanceResult",
     "TransactionHistoryItem",
     "LimitsConfig",
