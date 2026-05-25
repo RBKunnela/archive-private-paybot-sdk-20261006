@@ -36,7 +36,7 @@ signing = [
 ]
 mcp = [
     # Will be required by the MCP integration mirror of paybot-mcp; not used yet.
-    "mcp>=0.5,<1.0",
+    "mcp>=1.27.1,<2.0",
 ]
 test = [
     "pytest>=8",
