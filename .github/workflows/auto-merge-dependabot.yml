@@ -1,0 +1,42 @@
+name: Auto-merge Dependabot
+
+# When Dependabot opens, reopens, or marks ready a PR, enable GitHub auto-merge
+# so the PR merges automatically once all required status checks pass
+# (including friendlyai/review). Limited strictly to PRs authored by
+# dependabot[bot]; human-authored PRs are unaffected and still require manual
+# merge.
+#
+# Uses pull_request_target so the workflow runs in the base branch's context
+# with a GITHUB_TOKEN that has write permissions — Dependabot's normal token
+# is read-only. The workflow never checks out or executes PR code, so the
+# elevated permissions are safe.
+#
+# Note on review requirement: branch protection on main requires 1 approving
+# review. Auto-merge queues but does NOT bypass that — a human still needs to
+# approve. For full hands-off Dependabot merging, either (a) lower
+# required_reviews to 0 for this repo, or (b) add a separate workflow that
+# auto-approves Dependabot PRs using a PAT.
+
+on:
+  pull_request_target:
+    # Intentionally excludes `labeled` — that would re-run the workflow on any
+    # label change (CodeRabbit, triage, etc.), causing noise. The three events
+    # below cover every legitimate trigger for enabling auto-merge.
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    name: Enable auto-merge
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    timeout-minutes: 2
+    steps:
+      - name: Enable auto-merge (squash)
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
