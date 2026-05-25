@@ -57,7 +57,7 @@ jobs:
     # MAJOR-level guidance). The reusable-workflow `uses:` form accepts a SHA
     # in place of a tag. Adjacent version comment marks the floating-tag intent
     # so Dependabot github-actions can offer upgrades.
-    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@456ceb78310755116e0a3738121351006286b797"  # v2.2.1
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2"  # v2.3.8
     with:
       scan-args: |-
         --recursive
