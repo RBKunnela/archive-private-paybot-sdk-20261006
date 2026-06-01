@@ -16,11 +16,81 @@ import type {
   CommissionLedgerFilter,
   CommissionEntry,
 } from './types.js';
-import { getErrorMessage, PayBotApiError } from './errors.js';
+import {
+  getErrorMessage,
+  PayBotApiError,
+  PayBotNetworkError,
+  PayBotTimeoutError,
+  mapHttpError,
+} from './errors.js';
 import { generateEIP3009Nonce } from './crypto.js';
-import { EIP712_DOMAINS, EIP3009_TYPES, NETWORKS } from './networks.js';
+import { EIP3009_TYPES, NETWORKS, getToken, getEip712Domain } from './networks.js';
 import { withSpan, type TelemetryConfig } from './telemetry.js';
 import { privateKeyToAccount } from 'viem/accounts';
+
+/** Default maximum number of cached idempotent results per client instance. */
+const IDEMPOTENCY_CACHE_CAP = 256;
+
+/**
+ * Minimal bounded LRU cache backed by a single Map.
+ *
+ * Insertion order in a JS Map is recency order for our purposes: on a cache
+ * hit we delete-then-reinsert the key to mark it most-recently-used; on insert
+ * past capacity we evict the oldest key (the first one the Map iterator yields).
+ *
+ * Used per-PayBotClient-instance to dedupe idempotent calls. Not thread-safe,
+ * but the SDK runs single-threaded per instance.
+ *
+ * @typeParam V - The cached value type.
+ */
+class LruCache<V> {
+  private readonly store = new Map<string, V>();
+
+  /**
+   * @param capacity - Maximum number of entries before eviction kicks in.
+   */
+  constructor(private readonly capacity: number) {}
+
+  /**
+   * Look up a key, marking it most-recently-used on a hit.
+   *
+   * @param key - The cache key.
+   * @returns The cached value, or `undefined` if absent.
+   */
+  get(key: string): V | undefined {
+    if (!this.store.has(key)) return undefined;
+    const value = this.store.get(key) as V;
+    // Re-insert to move to the most-recently-used position.
+    this.store.delete(key);
+    this.store.set(key, value);
+    return value;
+  }
+
+  /**
+   * Insert or update a key, evicting the least-recently-used entry if the
+   * cache is at capacity.
+   *
+   * @param key - The cache key.
+   * @param value - The value to cache.
+   */
+  set(key: string, value: V): void {
+    // Update-in-place should also refresh recency.
+    if (this.store.has(key)) {
+      this.store.delete(key);
+    } else if (this.store.size >= this.capacity) {
+      const oldest = this.store.keys().next().value;
+      if (oldest !== undefined) {
+        this.store.delete(oldest);
+      }
+    }
+    this.store.set(key, value);
+  }
+
+  /** Current number of cached entries (primarily for tests). */
+  get size(): number {
+    return this.store.size;
+  }
+}
 
 /**
  * PayBotClient — the SDK entry point for bot developers.
@@ -48,6 +118,10 @@ export class PayBotClient {
   private timeout: number;
   /** Opt-in telemetry config; undefined means tracing is a complete no-op. */
   private telemetry?: TelemetryConfig;
+  /** Per-instance LRU of idempotent pay() results (only success:true cached). */
+  private payIdempotencyCache = new LruCache<PaymentResult>(IDEMPOTENCY_CACHE_CAP);
+  /** Per-instance LRU of idempotent register() results. */
+  private registerIdempotencyCache = new LruCache<RegisterResult>(IDEMPOTENCY_CACHE_CAP);
 
   constructor(config: PayBotConfig) {
     if (!config.apiKey || typeof config.apiKey !== 'string') {
@@ -84,7 +158,12 @@ export class PayBotClient {
    */
   private async _request<T>(
     path: string,
-    options: { method?: string; body?: unknown; query?: Record<string, string> } = {}
+    options: {
+      method?: string;
+      body?: unknown;
+      query?: Record<string, string>;
+      headers?: Record<string, string>;
+    } = {}
   ): Promise<T> {
     const url = new URL(path, this.config.facilitatorUrl);
     if (options.query) {
@@ -98,6 +177,9 @@ export class PayBotClient {
     };
     if (options.body !== undefined) {
       headers['Content-Type'] = 'application/json';
+    }
+    if (options.headers) {
+      Object.assign(headers, options.headers);
     }
 
     const fetchOptions: RequestInit = {
@@ -121,10 +203,11 @@ export class PayBotClient {
         continue; // retry on network errors
       }
 
-      // Don't retry on 4xx (client errors)
+      // Don't retry on 4xx (client errors). Map to the most specific subclass
+      // (auth/policy) while keeping `instanceof PayBotApiError` true for callers.
       if (response.status >= 400 && response.status < 500) {
         const errorData = await response.json().catch(() => ({})) as Record<string, unknown>;
-        throw new PayBotApiError(
+        throw mapHttpError(
           (errorData.error as string) ?? `HTTP ${response.status}`,
           (errorData.code as string) ?? 'HTTP_ERROR',
           response.status,
@@ -145,14 +228,13 @@ export class PayBotClient {
       return response.json() as Promise<T>;
     }
 
-    // All retries exhausted
+    // All retries exhausted. A PayBotApiError here is already specific
+    // (e.g. PayBotTimeoutError from fetchWithTimeout, or a 5xx PayBotApiError).
     if (lastError instanceof PayBotApiError) {
       throw lastError;
     }
-    throw new PayBotApiError(
-      `Network error: ${getErrorMessage(lastError)}`,
-      'NETWORK_ERROR',
-      0
+    throw new PayBotNetworkError(
+      `Network error: ${getErrorMessage(lastError)}`
     );
   }
 
@@ -163,10 +245,8 @@ export class PayBotClient {
       return await fetch(url, { ...options, signal: controller.signal });
     } catch (error: unknown) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new PayBotApiError(
-          `Request timed out after ${this.timeout}ms`,
-          'TIMEOUT',
-          0
+        throw new PayBotTimeoutError(
+          `Request timed out after ${this.timeout}ms`
         );
       }
       throw error;
@@ -185,6 +265,18 @@ export class PayBotClient {
    */
   async pay(request: PaymentRequest): Promise<PaymentResult> {
     const network = request.network ?? 'eip155:84532';
+    const idempotencyKey = request.idempotencyKey;
+
+    // Idempotency: return a previously-cached successful result for the same
+    // key without a second network round-trip. Only success:true results are
+    // cached (see below), so a cache hit is always a real prior success.
+    if (idempotencyKey !== undefined) {
+      const cached = this.payIdempotencyCache.get(idempotencyKey);
+      if (cached !== undefined) {
+        return cached;
+      }
+    }
+
     // Wrap the whole pay() body in the top-level span. A returned failure
     // PaymentResult is reported as an OK span with success=false (nothing was
     // thrown); only thrown errors mark the span ERROR (handled in withSpan).
@@ -199,14 +291,41 @@ export class PayBotClient {
       async (paySpan): Promise<PaymentResult> => {
         try {
           const networkConfig = NETWORKS[network];
-          const tokenContract = request.tokenContract ?? networkConfig?.usdcAddress ?? '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
-          const amountBaseUnits = this.usdToBaseUnits(request.amount);
+          const symbol = request.token ?? 'USDC';
+
+          // Resolve the token from the registry. An unknown symbol short-circuits
+          // to a failure PaymentResult (mirrors the UNSUPPORTED_NETWORK pattern).
+          const token = getToken(symbol);
+          if (!token) {
+            paySpan?.setAttribute('success', false);
+            return {
+              success: false,
+              grossAmount: '0',
+              netAmount: '0',
+              commissionAmount: '0',
+              commissionRate: 0,
+              error: `Unsupported token: ${symbol}`,
+              errorCode: 'UNSUPPORTED_TOKEN',
+            };
+          }
+
+          // Token contract precedence: explicit override > token's address on
+          // this network > legacy USDC fallbacks (network usdcAddress, then the
+          // hardcoded Base Sepolia USDC for parity with prior behavior).
+          const tokenContract =
+            request.tokenContract ??
+            token.addressByNetwork[network] ??
+            networkConfig?.usdcAddress ??
+            '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+
+          // Convert using the token's decimals (USDC and EURC both use 6).
+          const amountBaseUnits = this.amountToBaseUnits(request.amount, token.decimals);
 
           const payloadString = await withSpan(
             this.telemetry,
             'x402.sign',
             { network },
-            () => this.buildPaymentPayload(request.payTo, amountBaseUnits, network)
+            () => this.buildPaymentPayload(request.payTo, amountBaseUnits, network, symbol)
           );
 
           const payloadBody = {
@@ -239,6 +358,9 @@ export class PayBotClient {
                   payload: payloadBody,
                   requirements,
                 },
+                headers: idempotencyKey !== undefined
+                  ? { 'X-Idempotency-Key': idempotencyKey }
+                  : undefined,
               })
             );
           } catch (error: unknown) {
@@ -314,7 +436,7 @@ export class PayBotClient {
             paySpan?.setAttribute('tx_hash', txHash);
           }
 
-          return {
+          const result: PaymentResult = {
             success: true,
             txHash,
             grossAmount: String(commissionData?.grossAmount ?? '0'),
@@ -323,6 +445,14 @@ export class PayBotClient {
             commissionRate: Number(commissionData?.commissionRate ?? 0),
             network: settleData.network as string | undefined,
           };
+
+          // Cache only successful results so a retry with the same key short-
+          // circuits; failures are never cached (the caller may retry to recover).
+          if (idempotencyKey !== undefined) {
+            this.payIdempotencyCache.set(idempotencyKey, result);
+          }
+
+          return result;
         } catch (error: unknown) {
           paySpan?.setAttribute('success', false);
           return {
@@ -342,19 +472,30 @@ export class PayBotClient {
    * Build the payment payload string.
    * If walletPrivateKey is set, signs an EIP-3009 authorization.
    * Otherwise, uses mock format.
+   *
+   * @param payTo - Recipient wallet address.
+   * @param amountBaseUnits - Amount in the token's base units (decimal string).
+   * @param network - CAIP-2 network id (e.g. `'eip155:8453'`).
+   * @param symbol - Token ticker to sign for (default `'USDC'`). Selects the
+   *   token-specific EIP-712 domain (name + verifyingContract). USDC remains
+   *   byte-identical to the legacy `EIP712_DOMAINS[network]` domain.
+   * @returns The payload string: mock `payer:<botId>` when no wallet key is set,
+   *   otherwise a JSON EIP-3009 signed authorization.
+   * @throws {Error} when the token has no EIP-712 domain on the given network.
    */
   private async buildPaymentPayload(
     payTo: string,
     amountBaseUnits: string,
-    network: string
+    network: string,
+    symbol = 'USDC'
   ): Promise<string> {
     if (!this.config.walletPrivateKey) {
       return `payer:${this.config.botId}`;
     }
 
-    const domain = EIP712_DOMAINS[network];
+    const domain = getEip712Domain(network, symbol);
     if (!domain) {
-      throw new Error(`No EIP-712 domain for network: ${network}`);
+      throw new Error(`No EIP-712 domain for network: ${network} / token: ${symbol}`);
     }
 
     const account = privateKeyToAccount(this.config.walletPrivateKey as `0x${string}`);
@@ -424,12 +565,36 @@ export class PayBotClient {
   /**
    * Register a new bot with the PayBot facilitator.
    * Throws PayBotApiError on non-2xx responses (e.g. 409 if already registered).
+   *
+   * @param trustLevel - Initial trust level for the bot (default 1).
+   * @param idempotencyKey - Optional key. When provided, sends
+   *   `X-Idempotency-Key` and caches the result per-instance so a repeat call
+   *   with the same key returns the cached RegisterResult without a second
+   *   network round-trip. Only successful registrations are cached.
    */
-  async register(trustLevel?: TrustLevel): Promise<RegisterResult> {
-    return this._request<RegisterResult>('/bots', {
+  async register(trustLevel?: TrustLevel, idempotencyKey?: string): Promise<RegisterResult> {
+    if (idempotencyKey !== undefined) {
+      const cached = this.registerIdempotencyCache.get(idempotencyKey);
+      if (cached !== undefined) {
+        return cached;
+      }
+    }
+
+    const result = await this._request<RegisterResult>('/bots', {
       method: 'POST',
       body: { botId: this.config.botId, trustLevel: trustLevel ?? 1 },
+      headers: idempotencyKey !== undefined
+        ? { 'X-Idempotency-Key': idempotencyKey }
+        : undefined,
     });
+
+    // Only reached on success (_request throws on non-2xx), so caching here
+    // never caches a failure.
+    if (idempotencyKey !== undefined) {
+      this.registerIdempotencyCache.set(idempotencyKey, result);
+    }
+
+    return result;
   }
 
   /**
@@ -441,18 +606,33 @@ export class PayBotClient {
   }
 
   /**
-   * Convert USD amount string to USDC base units (6 decimals).
+   * Convert a human-readable amount string to a token's base units.
+   *
+   * Generalizes the conversion over the token's decimal count (USDC and EURC
+   * both use 6). The fractional part is right-padded then truncated to exactly
+   * `decimals` digits, leading zeros are stripped, and an all-zero result
+   * normalizes to `'0'`.
+   *
+   * @param amount - Human-readable decimal amount (e.g. `'0.05'`, `'10'`).
+   * @param decimals - The token's base-unit decimals (e.g. 6 for USDC/EURC).
+   * @returns The amount in base units as a decimal string (e.g. `'50000'`).
+   * @throws {Error} when `amount` is not a non-empty string or not a valid
+   *   non-negative decimal.
+   *
+   * @example
+   *   amountToBaseUnits('0.05', 6); // '50000'
+   *   amountToBaseUnits('10', 6);   // '10000000'
    */
-  private usdToBaseUnits(usdAmount: string): string {
-    if (!usdAmount || typeof usdAmount !== 'string') {
+  private amountToBaseUnits(amount: string, decimals: number): string {
+    if (!amount || typeof amount !== 'string') {
       throw new Error('Amount must be a non-empty string');
     }
-    if (!/^\d+\.?\d*$/.test(usdAmount)) {
-      throw new Error(`Invalid USD amount: ${usdAmount}`);
+    if (!/^\d+\.?\d*$/.test(amount)) {
+      throw new Error(`Invalid USD amount: ${amount}`);
     }
-    const parts = usdAmount.split('.');
+    const parts = amount.split('.');
     const whole = parts[0] ?? '0';
-    const fraction = (parts[1] ?? '').padEnd(6, '0').slice(0, 6);
+    const fraction = (parts[1] ?? '').padEnd(decimals, '0').slice(0, decimals);
     return `${whole}${fraction}`.replace(/^0+/, '') || '0';
   }
 

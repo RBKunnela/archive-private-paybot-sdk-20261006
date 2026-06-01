@@ -25,7 +25,7 @@ import { getErrorMessage, PayBotApiError } from './errors.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { PrivateKeyAccount } from 'viem/accounts';
 import { generateEIP3009Nonce } from './crypto.js';
-import { EIP712_DOMAINS, EIP3009_TYPES, parseCaip2 } from './networks.js';
+import { EIP3009_TYPES, parseCaip2, getEip712Domain, getToken } from './networks.js';
 
 /**
  * x402 v2 Handler - Complete protocol implementation
@@ -245,26 +245,43 @@ export class X402Handler {
    * Resolve the EIP-712 domain for a requirements' network, validating the
    * CAIP-2 shape first.
    *
-   * Two distinct failure modes are surfaced:
+   * The domain is token-specific: it resolves through {@link getEip712Domain}
+   * using `requirements.token` (default `'USDC'`), so EURC payments sign under
+   * the EURC contract/name while USDC payments remain byte-identical to before.
+   *
+   * Three distinct failure modes are surfaced:
    *   - A malformed CAIP-2 string (e.g. `'not-a-network'`, `'solana:foo'`) →
    *     `INVALID_CAIP2` (bubbled from {@link parseCaip2}).
-   *   - A well-formed `eip155:<chainId>` with no registered domain (e.g.
-   *     `'eip155:999999'`) → `UNSUPPORTED_NETWORK` (preserves the historical
-   *     behavior the regression tests lock in).
+   *   - An unknown token symbol → `UNSUPPORTED_TOKEN` (402).
+   *   - A well-formed `eip155:<chainId>` with no registered domain for the token
+   *     (e.g. `'eip155:999999'`) → `UNSUPPORTED_NETWORK` (preserves the
+   *     historical behavior the regression tests lock in).
    *
-   * @param requirements - Payment requirements carrying the `network`.
+   * @param requirements - Payment requirements carrying the `network` and optional `token`.
    * @returns The resolved EIP-712 domain.
-   * @throws {PayBotApiError} `INVALID_CAIP2` (400) or `UNSUPPORTED_NETWORK` (402).
+   * @throws {PayBotApiError} `INVALID_CAIP2` (400), `UNSUPPORTED_TOKEN` (402),
+   *          or `UNSUPPORTED_NETWORK` (402).
    */
   private resolveDomain(
     requirements: PaymentRequirements,
   ): { name: string; version: string; chainId: number; verifyingContract: `0x${string}` } {
     const network = requirements.network || 'eip155:8453';
+    const symbol = requirements.token ?? 'USDC';
 
     // Throws INVALID_CAIP2 for malformed network strings.
     parseCaip2(network);
 
-    const domain = EIP712_DOMAINS[network];
+    // Distinguish an unknown token from an unsupported network so callers get a
+    // precise error code (mirrors the UNSUPPORTED_NETWORK pattern).
+    if (!getToken(symbol)) {
+      throw new PayBotApiError(
+        `Unsupported token: ${symbol}`,
+        'UNSUPPORTED_TOKEN',
+        402,
+      );
+    }
+
+    const domain = getEip712Domain(network, symbol);
     if (!domain) {
       throw new PayBotApiError(
         `No EIP-712 domain for network: ${network}`,

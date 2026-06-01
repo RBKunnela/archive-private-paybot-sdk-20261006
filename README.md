@@ -198,6 +198,95 @@ isSupportedCaip2('eip155:8453');  // true
 // X402Handler.validateUptoCapture(authorizedMax, captured) throws UPTO_OVERCHARGE if exceeded.
 ```
 
+## Tokens (USDC + EURC)
+
+Pay in USDC (default) or EURC — both MiCA-authorized and EIP-3009-capable on Base + Base Sepolia. The signing domain is resolved per-token, so EURC signs against its own contract.
+
+```typescript
+import { TOKENS, getToken, getSupportedTokens } from 'paybot-sdk';
+
+getSupportedTokens();          // ['USDC', 'EURC']
+getToken('EURC')?.micaCompliant; // true
+
+await client.pay({
+  resource: 'https://api.example.com/data',
+  amount: '0.50',
+  payTo: '0x....',
+  token: 'EURC',               // defaults to 'USDC'; unknown token → UNSUPPORTED_TOKEN
+  network: 'eip155:8453',
+});
+```
+
+> EURC addresses ship from Circle's official deployment list — verify against [circle.com/multi-chain-usdc](https://www.circle.com/multi-chain-usdc) before mainnet use.
+
+## Error Taxonomy
+
+`pay()` still returns `PaymentResult` (never throws). The other methods throw a typed hierarchy you can `instanceof`-switch on — all subclasses remain `instanceof PayBotApiError` for backward compatibility.
+
+```typescript
+import {
+  PayBotError,            // abstract root
+  PayBotApiError,         // HTTP-level (unchanged)
+  PayBotNetworkError, PayBotTimeoutError, PayBotAuthError,
+  PayBotPolicyError,      // trust/AML/daily-limit
+  PayBotSignatureError, PayBotSettlementError,
+} from 'paybot-sdk';
+
+try {
+  await client.balance();
+} catch (err) {
+  if (err instanceof PayBotPolicyError) { /* trust/limit gate */ }
+  else if (err instanceof PayBotAuthError) { /* re-auth */ }
+}
+```
+
+## Idempotency Keys
+
+Pass an `idempotencyKey` to `pay()` / `register()` — sent as `X-Idempotency-Key` and deduped in a per-client LRU so a retried call doesn't double-bill.
+
+```typescript
+await client.pay({ resource, amount: '0.01', payTo, idempotencyKey: 'order_42_attempt_1' });
+// A second call with the same key returns the cached result with no network round-trip.
+```
+
+## Multi-Bot Pool + Spend Treasury
+
+Run many bots in one process from shared operator/transport config, each with its own signing key, under an optional shared daily spend ceiling.
+
+```typescript
+import { PayBotClientPool } from 'paybot-sdk';
+
+const pool = new PayBotClientPool({
+  apiKey: 'pb_...',
+  operatorId: 'op_1',
+  sharedDailyLimitUsd: 500,         // optional treasury across all bots
+});
+pool.addBot({ botId: 'bot-1', walletPrivateKey: '0x...' });
+pool.addBot({ botId: 'bot-2', walletPrivateKey: '0x...' });
+
+// payAs() blocks over-treasury BEFORE any network call (errorCode 'TREASURY_EXCEEDED')
+const result = await pool.payAs('bot-1', { resource, amount: '12.00', payTo });
+pool.remainingTreasuryUsd();        // 488 after a successful $12 spend
+```
+
+## AP2 + MPP
+
+paybot is a clean x402 settlement engine, so a Google **AP2** (A2A x402-extension) mandate can settle through it directly. **MPP** (Stripe/Tempo) is still preview — the SDK ships only a detect-and-route capability seam, not a full client.
+
+```typescript
+import { Ap2Adapter, detectMppCapability } from 'paybot-sdk';
+
+const ap2 = new Ap2Adapter(handler);              // handler: X402Handler
+if (ap2.validateMandate(mandate).valid) {
+  const receipt = await ap2.settle(mandate);      // signs + submits via x402
+}
+
+detectMppCapability(responseHeaders);             // { supported, mode: 'detect-only'|'none', specVersion? }
+// createMppSeam().settle(...) throws MPP_NOT_IMPLEMENTED (501) — full MPP deferred until GA
+```
+
+> The AP2 adapter settles the payment; it does **not** verify the AP2 verifiable-credential signature — that stays in the mandate issuer's trust domain.
+
 ## Python SDK
 
 A Python port lives in [`packages/python`](./packages/python) (`paybot-sdk` on PyPI, `>=3.10`). Mirrors the TS client surface, real EIP-3009 signing via `eth-account`, and the identical webhook verification contract.

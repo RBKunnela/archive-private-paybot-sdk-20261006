@@ -38,12 +38,173 @@ export const NETWORKS: Record<string, NetworkConfig> = {
 
 /**
  * USDC token configuration shared across networks.
+ *
+ * Kept exported for back-compat. The multi-token registry below ({@link TOKENS})
+ * supersedes it for new code; this is the legacy single-token view.
  */
 export const USDC_CONFIG = {
   symbol: 'USDC',
   decimals: 6,
   name: 'USD Coin',
 } as const;
+
+/**
+ * Configuration for a single fungible token the SDK can pay with.
+ *
+ * The split between {@link TokenConfig.name} and {@link TokenConfig.eip712Name}
+ * is deliberate and load-bearing for signing:
+ *
+ *   - `name` is the **human-readable** token name (e.g. "USD Coin").
+ *   - `eip712Name` is the **on-chain EIP-712 domain name** the token's contract
+ *     actually uses in its `DOMAIN_SEPARATOR` (e.g. USDC contracts sign as the
+ *     literal string `"USDC"`, NOT "USD Coin"). This string is what gets hashed
+ *     into the signature, so it MUST match the deployed contract byte-for-byte
+ *     or every signature will be rejected.
+ *
+ * When `eip712Name` is omitted, {@link getEip712Domain} falls back to `name`.
+ */
+export interface TokenConfig {
+  /** Token ticker symbol, used as the registry key (e.g. `'USDC'`, `'EURC'`). */
+  readonly symbol: string;
+  /** Number of base-unit decimals (USDC and EURC both use 6). */
+  readonly decimals: number;
+  /** Human-readable token name (e.g. `'USD Coin'`). NOT necessarily the EIP-712 name. */
+  readonly name: string;
+  /**
+   * The on-chain EIP-712 domain `name` the token contract signs under. Defaults
+   * to {@link TokenConfig.name} when absent. For USDC this is `'USDC'` (the
+   * deployed Circle contract's domain name), distinct from the display name.
+   */
+  readonly eip712Name?: string;
+  /** Whether the token is MiCA-compliant (EU Markets in Crypto-Assets). */
+  readonly micaCompliant: boolean;
+  /** Map of CAIP-2 network id → the token's ERC-20 contract address on that network. */
+  readonly addressByNetwork: Record<string, string>;
+}
+
+/**
+ * Registry of supported tokens, keyed by ticker symbol.
+ *
+ * Addresses are reused from / kept in sync with the per-network `usdcAddress`
+ * for USDC (do not diverge). EURC addresses are Circle's official deployments.
+ */
+export const TOKENS: Record<string, TokenConfig> = {
+  USDC: {
+    symbol: 'USDC',
+    decimals: 6,
+    name: 'USD Coin',
+    // USDC contracts sign their EIP-712 domain as the literal "USDC".
+    eip712Name: 'USDC',
+    micaCompliant: true,
+    addressByNetwork: {
+      // Reuses NETWORKS[...].usdcAddress — keep identical, do not diverge.
+      'eip155:8453': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      'eip155:84532': '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+    },
+  },
+  EURC: {
+    symbol: 'EURC',
+    decimals: 6,
+    name: 'EURC',
+    eip712Name: 'EURC',
+    micaCompliant: true,
+    addressByNetwork: {
+      // Circle EURC deployment; verify against circle.com/multi-chain-usdc
+      // before mainnet.
+      'eip155:8453': '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42',
+      'eip155:84532': '0x808456652fdb597867f38412077A9182bf77359F',
+    },
+  },
+} as const;
+
+/**
+ * Look up a token's full configuration by symbol.
+ *
+ * @param symbol - The token ticker (e.g. `'USDC'`, `'EURC'`). Case-sensitive.
+ * @returns The {@link TokenConfig}, or `undefined` when the symbol is unknown.
+ *
+ * @example
+ *   getToken('USDC')?.decimals; // 6
+ *   getToken('DOGE');           // undefined
+ */
+export function getToken(symbol: string): TokenConfig | undefined {
+  return TOKENS[symbol];
+}
+
+/**
+ * Resolve a token's ERC-20 contract address on a specific network.
+ *
+ * @param symbol - The token ticker (e.g. `'USDC'`).
+ * @param network - The CAIP-2 network id (e.g. `'eip155:8453'`).
+ * @returns The contract address, or `undefined` when either the token is
+ *          unknown OR the token is not deployed on that network.
+ *
+ * @example
+ *   getTokenAddress('EURC', 'eip155:8453'); // '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42'
+ *   getTokenAddress('USDC', 'eip155:1');    // undefined (not deployed here)
+ *   getTokenAddress('DOGE', 'eip155:8453'); // undefined (unknown token)
+ */
+export function getTokenAddress(symbol: string, network: string): string | undefined {
+  return TOKENS[symbol]?.addressByNetwork[network];
+}
+
+/**
+ * List the ticker symbols of all tokens in the registry.
+ *
+ * @returns An array of supported token symbols (e.g. `['USDC', 'EURC']`).
+ *
+ * @example
+ *   getSupportedTokens(); // ['USDC', 'EURC']
+ */
+export function getSupportedTokens(): string[] {
+  return Object.keys(TOKENS);
+}
+
+/**
+ * Build the EIP-712 domain for signing an EIP-3009 `TransferWithAuthorization`
+ * for a given token on a given network.
+ *
+ * The domain is token-specific: USDC signs as `name: 'USDC'` at the USDC
+ * contract address; EURC signs as `name: 'EURC'` at the EURC contract address.
+ * This is the multi-token generalization of the legacy {@link EIP712_DOMAINS}
+ * table (which only ever held USDC).
+ *
+ * REGRESSION GUARANTEE: for `symbol === 'USDC'` this returns a domain
+ * byte-identical to `EIP712_DOMAINS[network]` (same `name`, `version`,
+ * `chainId`, `verifyingContract`), so existing USDC signatures are unchanged.
+ *
+ * @param network - The CAIP-2 network id (e.g. `'eip155:8453'`).
+ * @param symbol - The token ticker (default `'USDC'`).
+ * @returns The EIP-712 domain, or `undefined` when the token is unknown OR the
+ *          token has no address / no network entry for `network`.
+ *
+ * @example
+ *   getEip712Domain('eip155:8453', 'USDC');
+ *   // { name: 'USDC', version: '2', chainId: 8453, verifyingContract: '0x8335...' }
+ *   getEip712Domain('eip155:8453', 'EURC');
+ *   // { name: 'EURC', version: '2', chainId: 8453, verifyingContract: '0x60a3...' }
+ *   getEip712Domain('eip155:8453', 'DOGE'); // undefined
+ */
+export function getEip712Domain(
+  network: string,
+  symbol = 'USDC',
+): { name: string; version: string; chainId: number; verifyingContract: `0x${string}` } | undefined {
+  const token = TOKENS[symbol];
+  if (!token) {
+    return undefined;
+  }
+  const verifyingContract = token.addressByNetwork[network];
+  const networkConfig = NETWORKS[network];
+  if (!verifyingContract || !networkConfig) {
+    return undefined;
+  }
+  return {
+    name: token.eip712Name ?? token.name,
+    version: '2',
+    chainId: networkConfig.chainId,
+    verifyingContract: verifyingContract as `0x${string}`,
+  };
+}
 
 /**
  * Get network config by CAIP-2 identifier.

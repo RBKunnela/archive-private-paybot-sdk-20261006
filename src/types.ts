@@ -37,8 +37,24 @@ export interface PaymentRequest {
   payTo: string;
   /** Token contract (defaults to USDC on Base) */
   tokenContract?: string;
+  /**
+   * Token ticker symbol to pay with (e.g. `'USDC'`, `'EURC'`). Default `'USDC'`.
+   * When set, the SDK resolves the token's address-on-network for the `asset`
+   * field, uses its decimals for base-unit conversion, and signs against its
+   * token-specific EIP-712 domain. An explicit {@link PaymentRequest.tokenContract}
+   * still overrides the resolved address. Unknown symbol → PaymentResult
+   * `success:false` with code `UNSUPPORTED_TOKEN`.
+   */
+  token?: string;
   /** Network CAIP-2 ID (default: eip155:84532 Base Sepolia) */
   network?: string;
+  /**
+   * Optional idempotency key. When provided, the SDK sends an
+   * `X-Idempotency-Key` header and caches the successful result per
+   * PayBotClient instance: a repeat pay() with the same key returns the cached
+   * PaymentResult without a second network round-trip.
+   */
+  idempotencyKey?: string;
 }
 
 export interface PaymentResult {
@@ -154,6 +170,12 @@ export interface PaymentRequirements {
   minAmount?: string;
   /** Optional max amount for range scheme */
   maxAmount?: string;
+  /**
+   * Optional token ticker symbol (e.g. `'USDC'`, `'EURC'`). Selects the
+   * token-specific EIP-712 signing domain. Defaults to `'USDC'` when absent,
+   * preserving legacy single-token behavior byte-for-byte.
+   */
+  token?: string;
 }
 
 /**
