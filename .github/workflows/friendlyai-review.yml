@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Run FriendlyAI Review
-        uses: RBKunnela/friendlyai-review-action@a8997c65c1ea219cfad5c591c9f8bf90a4c7a72c # v1.0.2
+        uses: RBKunnela/friendlyai-review-action@4f702099ee953d68aa6cea11645df318d2bfa5bf # v1.0.4
         with:
           review-api-key: ${{ secrets.FRIENDLYAI_REVIEW_API_KEY }}
           review-api-url: ${{ secrets.FRIENDLYAI_REVIEW_API_URL }}
