@@ -324,6 +324,62 @@ result = await client.pay(PaymentRequest(resource="https://api.example.com/data"
 
 For AI agent frameworks, use [paybot-mcp](https://github.com/RBKunnela/paybot-mcp) which wraps this SDK as an MCP server.
 
+## Roadmap & Status
+
+> **Legend:** ✅ shipped · 🟡 partial · 🔭 deferred (intentional) · ⬜ gap
+
+**Capability map** — what the SDK can do today:
+
+![paybot-sdk capability map](./.github/assets/paybot-sdk-capability-map.png)
+
+**Roadmap ahead** — the phased plan:
+
+![paybot-sdk roadmap](./.github/assets/paybot-sdk-roadmap-timeline.png)
+
+### What we've built
+
+**Core rail (hardened):** `PayBotClient` (pay/balance/history/setLimits/register/health/commission/API-keys) · x402 auto-handler · EIP-3009 signing · `MicropaymentEngine` · trust levels 0–5 · commission accounting · `paybot402()` middleware · self-hostable facilitator · CI hardening (CodeQL, OSV, 80% coverage gate, SHA-pinned actions).
+
+| Shipped | Gap ID |
+|---------|--------|
+| ✅ x402 **v2 conformance** — `upto` scheme, `PAYMENT-*` headers, CAIP-2 helpers | T1.1 + new |
+| ✅ **Webhook signature verification** (TS + Python, byte-identical HMAC) | T1.2 |
+| ✅ **Idempotency keys** (`X-Idempotency-Key` + LRU dedupe) | T1.3 |
+| ✅ **Error taxonomy** (`PayBotError` + 6 typed subclasses) | T1.4 |
+| ✅ **OpenTelemetry hooks** (opt-in, zero new deps) | T1.5 |
+| ✅ **Multi-bot pool + spend treasury** | T1.6 |
+| ✅ **EURC + token registry** (per-token EIP-712 domains) | T2.2 |
+| ✅ **AP2 settlement adapter** · 🔭 thin **MPP capability seam** (deferred to GA) | T2.3 |
+| ✅ **Python SDK 0.1.0** (real EIP-3009 signing) | T3.2 (partial) |
+
+**Tier 1 (credibility blockers) is 100% complete** (T1.1–T1.6). Test posture: 331 TS tests / 98.66% coverage · 52 Python tests.
+
+### Current gaps
+
+- ⬜ **Network expansion (T2.1)** — still **Base + Base Sepolia only**; add Optimism / Arbitrum / Polygon.
+- ⬜ **CCTP V2 cross-chain receive** — ⏰ *time-sensitive: Circle CCTP V1 deprecates 2026-07-31.*
+- ⬜ **Refund + reversal helpers (T2.4)** · ⬜ **Streaming subscriptions (T2.5)** · ⬜ **Wallet-connect bridge (T2.6)**
+- 🟡 **Token breadth** — USDC + EURC done; PYUSD / RLUSD / DAI not added (operator-gated).
+- 🟡 **Language ports (T3.2)** — Python runtime shipped (middleware/x402-handler unported); Go / Rust not started.
+- ⬜ **Framework ports (T3.1)** (Hono/Next/NestJS/FastAPI/Django) · ⬜ **CLI (T3.4)** · ⬜ **Examples + tutorial site (T3.5)** · ⬜ **More MCP tools (T3.3)** · ⬜ **L402 shim (T3.6)**
+- 🔭 **Full MPP (T2.3)** — deliberately deferred; Stripe/Tempo MPP is still preview and shares no signing code with EIP-3009. Detect-only seam ships now.
+
+### Roadmap ahead
+
+Prioritized by internal gap severity × external leverage (EU-bank credibility, live distribution channels, hard deadlines).
+
+**Phase A — Near-term (rail credibility):**
+1. Network expansion (Optimism + Arbitrum + Polygon) — closes the biggest surface gap vs. Coinbase/Circle/Crossmint.
+2. CCTP V2 cross-chain receive — ⏰ hard deadline (CCTP V1 dies 2026-07-31).
+3. Refund + reversal helpers — table-stakes for real commerce.
+4. Token breadth (PYUSD/RLUSD/DAI, operator-gated).
+
+**Phase B — Mid-term (agent-economy surface):** streaming subscriptions · CLI · framework ports (Hono/Next/FastAPI first) · examples + tutorial site · wallet-connect bridge.
+
+**Phase C — Strategic / opportunistic:** full MPP (on GA) · more language ports (Go/Rust) · L402/Lightning shim · more MCP tools.
+
+**Strategic posture:** the moat is *self-hosted, non-custodial, MIT, trust-layer-in-the-SDK* — which custodial/portal-locked rivals (Coinbase Agentic Wallets, Circle, Crossmint, Payman) structurally cannot copy. Being a clean x402 settlement engine makes paybot AP2-pluggable and AgentCore-compatible today — so MPP can wait for GA.
+
 ## Deployment Options
 
 ### Option 1: Hosted (Recommended)
