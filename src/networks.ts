@@ -76,9 +76,13 @@ export interface TokenConfig {
    * deployed Circle contract's domain name), distinct from the display name.
    */
   readonly eip712Name?: string;
-  /** Whether the token is MiCA-compliant (EU Markets in Crypto-Assets). */
-  readonly micaCompliant: boolean;
-  /** Map of CAIP-2 network id → the token's ERC-20 contract address on that network. */
+  /**
+   * Map of CAIP-2 network id → the token's ERC-20 contract address on that
+   * network. This public registry intentionally carries only the addresses that
+   * are safe to ship open-core (e.g. testnet deployments). Mainnet addresses for
+   * regulated tokens are resolved at runtime from the operator layer via
+   * {@link PayBotConfig.tokenAddressOverrides} — never hardcoded here.
+   */
   readonly addressByNetwork: Record<string, string>;
 }
 
@@ -95,7 +99,6 @@ export const TOKENS: Record<string, TokenConfig> = {
     name: 'USD Coin',
     // USDC contracts sign their EIP-712 domain as the literal "USDC".
     eip712Name: 'USDC',
-    micaCompliant: true,
     addressByNetwork: {
       // Reuses NETWORKS[...].usdcAddress — keep identical, do not diverge.
       'eip155:8453': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
@@ -107,11 +110,11 @@ export const TOKENS: Record<string, TokenConfig> = {
     decimals: 6,
     name: 'EURC',
     eip712Name: 'EURC',
-    micaCompliant: true,
     addressByNetwork: {
-      // Circle EURC deployment; verify against circle.com/multi-chain-usdc
-      // before mainnet.
-      'eip155:8453': '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42',
+      // Public open-core registry carries ONLY the Base Sepolia testnet
+      // deployment. The EURC mainnet address is operator-private and must be
+      // injected at runtime via PayBotConfig.tokenAddressOverrides — it is
+      // deliberately NOT hardcoded here.
       'eip155:84532': '0x808456652fdb597867f38412077A9182bf77359F',
     },
   },
@@ -140,12 +143,49 @@ export function getToken(symbol: string): TokenConfig | undefined {
  *          unknown OR the token is not deployed on that network.
  *
  * @example
- *   getTokenAddress('EURC', 'eip155:8453'); // '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42'
- *   getTokenAddress('USDC', 'eip155:1');    // undefined (not deployed here)
- *   getTokenAddress('DOGE', 'eip155:8453'); // undefined (unknown token)
+ *   getTokenAddress('EURC', 'eip155:84532'); // '0x...' (testnet deployment)
+ *   getTokenAddress('USDC', 'eip155:1');     // undefined (not deployed here)
+ *   getTokenAddress('DOGE', 'eip155:8453');  // undefined (unknown token)
  */
 export function getTokenAddress(symbol: string, network: string): string | undefined {
   return TOKENS[symbol]?.addressByNetwork[network];
+}
+
+/**
+ * Resolve a token's contract address with an optional operator override layer.
+ *
+ * Resolution precedence (first match wins):
+ *   1. `overrides[symbol][network]` — operator-injected address (e.g. a mainnet
+ *      deployment intentionally kept out of the public registry).
+ *   2. The public {@link TOKENS} registry ({@link getTokenAddress}).
+ *
+ * Use this instead of {@link getTokenAddress} when an operator may supply
+ * addresses at runtime via {@link PayBotConfig.tokenAddressOverrides}. The
+ * helper is deliberately generic — it carries no token-specific or regulatory
+ * data, only the symbol→network→address lookup.
+ *
+ * @param symbol - The token ticker (e.g. `'USDC'`, `'EURC'`).
+ * @param network - The CAIP-2 network id (e.g. `'eip155:8453'`).
+ * @param overrides - Optional operator-supplied `symbol → network → address` map.
+ * @returns The resolved contract address, or `undefined` when neither the
+ *          override map nor the public registry has an entry.
+ *
+ * @example
+ *   resolveTokenAddress('EURC', 'eip155:8453');                 // undefined (not public)
+ *   resolveTokenAddress('EURC', 'eip155:8453', {
+ *     EURC: { 'eip155:8453': '0x...' },
+ *   });                                                          // '0x...' (operator-injected)
+ */
+export function resolveTokenAddress(
+  symbol: string,
+  network: string,
+  overrides?: Record<string, Record<string, string>>,
+): string | undefined {
+  const override = overrides?.[symbol]?.[network];
+  if (override) {
+    return override;
+  }
+  return getTokenAddress(symbol, network);
 }
 
 /**
@@ -175,25 +215,32 @@ export function getSupportedTokens(): string[] {
  *
  * @param network - The CAIP-2 network id (e.g. `'eip155:8453'`).
  * @param symbol - The token ticker (default `'USDC'`).
- * @returns The EIP-712 domain, or `undefined` when the token is unknown OR the
- *          token has no address / no network entry for `network`.
+ * @param verifyingContractOverride - Optional contract address to sign against,
+ *   used when the address is supplied at runtime by the operator layer (i.e. the
+ *   token has no public-registry entry for `network`, such as EURC mainnet).
+ *   When omitted, the address is taken from the public {@link TOKENS} registry.
+ * @returns The EIP-712 domain, or `undefined` when the token is unknown, the
+ *          network is unsupported, OR no contract address can be resolved
+ *          (neither an override nor a public-registry entry).
  *
  * @example
  *   getEip712Domain('eip155:8453', 'USDC');
  *   // { name: 'USDC', version: '2', chainId: 8453, verifyingContract: '0x8335...' }
- *   getEip712Domain('eip155:8453', 'EURC');
- *   // { name: 'EURC', version: '2', chainId: 8453, verifyingContract: '0x60a3...' }
- *   getEip712Domain('eip155:8453', 'DOGE'); // undefined
+ *   getEip712Domain('eip155:84532', 'EURC');
+ *   // { name: 'EURC', version: '2', chainId: 84532, verifyingContract: '0x...' }
+ *   getEip712Domain('eip155:8453', 'EURC', '0x...'); // operator-injected mainnet address
+ *   getEip712Domain('eip155:8453', 'DOGE');          // undefined
  */
 export function getEip712Domain(
   network: string,
   symbol = 'USDC',
+  verifyingContractOverride?: string,
 ): { name: string; version: string; chainId: number; verifyingContract: `0x${string}` } | undefined {
   const token = TOKENS[symbol];
   if (!token) {
     return undefined;
   }
-  const verifyingContract = token.addressByNetwork[network];
+  const verifyingContract = verifyingContractOverride ?? token.addressByNetwork[network];
   const networkConfig = NETWORKS[network];
   if (!verifyingContract || !networkConfig) {
     return undefined;

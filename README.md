@@ -200,24 +200,45 @@ isSupportedCaip2('eip155:8453');  // true
 
 ## Tokens (USDC + EURC)
 
-Pay in USDC (default) or EURC — both MiCA-authorized and EIP-3009-capable on Base + Base Sepolia. The signing domain is resolved per-token, so EURC signs against its own contract.
+Pay in USDC (default) or EURC — both EIP-3009-capable on Base + Base Sepolia. The signing domain is resolved per-token, so EURC signs against its own contract.
 
 ```typescript
-import { TOKENS, getToken, getSupportedTokens } from 'paybot-sdk';
+import { getToken, getSupportedTokens } from 'paybot-sdk';
 
-getSupportedTokens();          // ['USDC', 'EURC']
-getToken('EURC')?.micaCompliant; // true
+getSupportedTokens();      // ['USDC', 'EURC']
+getToken('EURC')?.symbol;  // 'EURC'
 
 await client.pay({
   resource: 'https://api.example.com/data',
   amount: '0.50',
   payTo: '0x....',
-  token: 'EURC',               // defaults to 'USDC'; unknown token → UNSUPPORTED_TOKEN
-  network: 'eip155:8453',
+  token: 'EURC',           // defaults to 'USDC'; unknown token → UNSUPPORTED_TOKEN
+  network: 'eip155:84532', // EURC testnet ships in the public registry
 });
 ```
 
-> EURC addresses ship from Circle's official deployment list — verify against [circle.com/multi-chain-usdc](https://www.circle.com/multi-chain-usdc) before mainnet use.
+### Mainnet token addresses (operator-supplied)
+
+The public registry ships only addresses that are safe to distribute open-core
+(e.g. testnet deployments). Mainnet addresses for regulated tokens are **not**
+hardcoded in the SDK — inject them at runtime via `tokenAddressOverrides`
+(`symbol → caip2Network → address`):
+
+```typescript
+const client = new PayBotClient({
+  apiKey: 'pb_...',
+  botId: 'my-bot',
+  tokenAddressOverrides: {
+    EURC: { 'eip155:8453': '0x...' }, // your EURC mainnet contract address
+  },
+});
+```
+
+Address resolution precedence: explicit `PaymentRequest.tokenContract` →
+`tokenAddressOverrides[symbol][network]` → the public registry → otherwise a
+`PaymentResult` failure with code `TOKEN_ADDRESS_NOT_CONFIGURED`. This keeps the
+SDK from signing against a wrong or absent address when a mainnet token is not
+configured.
 
 ## Error Taxonomy
 

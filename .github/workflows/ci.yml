@@ -11,6 +11,19 @@ on:
     branches: [main]
 
 jobs:
+  open-core-boundary:
+    name: open-core boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Hard gate: no operator-private / premium content may ship in the public
+      # open-core SDK src/. Fails the build on any forbidden term or address.
+      - name: Verify open-core boundary
+        run: bash scripts/verify-open-core-boundary.sh
+
   build:
     runs-on: ubuntu-latest
     strategy:

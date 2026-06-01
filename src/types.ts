@@ -21,6 +21,19 @@ export interface PayBotConfig {
   /** Request timeout in milliseconds (default: 30000) */
   timeout?: number;
   /**
+   * Optional operator-supplied token contract addresses, keyed
+   * `tokenSymbol → caip2Network → address` (e.g.
+   * `{ EURC: { 'eip155:8453': '0x...' } }`).
+   *
+   * The public open-core registry ({@link TOKENS}) ships only addresses that are
+   * safe to distribute (e.g. testnet deployments). Mainnet addresses for
+   * regulated tokens are NOT hardcoded in the public SDK — the operator injects
+   * them here at runtime. During payment, the SDK resolves a token address as:
+   * explicit `PaymentRequest.tokenContract` → this override map → the public
+   * registry → otherwise a `TOKEN_ADDRESS_NOT_CONFIGURED` failure.
+   */
+  tokenAddressOverrides?: Record<string, Record<string, string>>;
+  /**
    * Optional, opt-in OpenTelemetry tracing. Inject your own tracer (e.g.
    * `trace.getTracer('my-bot')`). When omitted, telemetry is a complete no-op
    * with zero overhead and the SDK adds no OpenTelemetry runtime dependency.

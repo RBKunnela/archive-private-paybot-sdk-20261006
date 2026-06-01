@@ -24,7 +24,7 @@ import {
   mapHttpError,
 } from './errors.js';
 import { generateEIP3009Nonce } from './crypto.js';
-import { EIP3009_TYPES, NETWORKS, getToken, getEip712Domain } from './networks.js';
+import { EIP3009_TYPES, getToken, getEip712Domain, resolveTokenAddress } from './networks.js';
 import { withSpan, type TelemetryConfig } from './telemetry.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -114,6 +114,12 @@ class LruCache<V> {
  */
 export class PayBotClient {
   private config: Required<Pick<PayBotConfig, 'apiKey' | 'facilitatorUrl' | 'botId' | 'operatorId'>> & { walletPrivateKey?: string };
+  /**
+   * Operator-supplied token address overrides (`symbol → caip2 → address`).
+   * Lets the operator inject mainnet addresses that are intentionally absent
+   * from the public open-core registry. See {@link PayBotConfig.tokenAddressOverrides}.
+   */
+  private tokenAddressOverrides?: Record<string, Record<string, string>>;
   private maxRetries: number;
   private timeout: number;
   /** Opt-in telemetry config; undefined means tracing is a complete no-op. */
@@ -148,6 +154,7 @@ export class PayBotClient {
       operatorId: config.operatorId ?? 'default-operator',
       walletPrivateKey: config.walletPrivateKey,
     };
+    this.tokenAddressOverrides = config.tokenAddressOverrides;
     this.maxRetries = config.maxRetries ?? 1;
     this.timeout = config.timeout ?? 30_000;
     this.telemetry = config.telemetry;
@@ -290,7 +297,6 @@ export class PayBotClient {
       },
       async (paySpan): Promise<PaymentResult> => {
         try {
-          const networkConfig = NETWORKS[network];
           const symbol = request.token ?? 'USDC';
 
           // Resolve the token from the registry. An unknown symbol short-circuits
@@ -309,14 +315,31 @@ export class PayBotClient {
             };
           }
 
-          // Token contract precedence: explicit override > token's address on
-          // this network > legacy USDC fallbacks (network usdcAddress, then the
-          // hardcoded Base Sepolia USDC for parity with prior behavior).
+          // Token contract precedence:
+          //   1. explicit request.tokenContract
+          //   2. operator-injected override (config.tokenAddressOverrides)
+          //   3. the public open-core registry (token.addressByNetwork)
+          // If none resolves (e.g. EURC mainnet, which is operator-private and
+          // intentionally absent from the public registry), fail loudly with
+          // TOKEN_ADDRESS_NOT_CONFIGURED rather than signing against a wrong or
+          // absent address.
           const tokenContract =
             request.tokenContract ??
-            token.addressByNetwork[network] ??
-            networkConfig?.usdcAddress ??
-            '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+            resolveTokenAddress(symbol, network, this.tokenAddressOverrides);
+          if (!tokenContract) {
+            paySpan?.setAttribute('success', false);
+            return {
+              success: false,
+              grossAmount: '0',
+              netAmount: '0',
+              commissionAmount: '0',
+              commissionRate: 0,
+              error:
+                `No contract address configured for token ${symbol} on network ${network}. ` +
+                `Provide it via PayBotConfig.tokenAddressOverrides[${symbol}][${network}].`,
+              errorCode: 'TOKEN_ADDRESS_NOT_CONFIGURED',
+            };
+          }
 
           // Convert using the token's decimals (USDC and EURC both use 6).
           const amountBaseUnits = this.amountToBaseUnits(request.amount, token.decimals);
@@ -325,7 +348,7 @@ export class PayBotClient {
             this.telemetry,
             'x402.sign',
             { network },
-            () => this.buildPaymentPayload(request.payTo, amountBaseUnits, network, symbol)
+            () => this.buildPaymentPayload(request.payTo, amountBaseUnits, network, symbol, tokenContract)
           );
 
           const payloadBody = {
@@ -479,6 +502,10 @@ export class PayBotClient {
    * @param symbol - Token ticker to sign for (default `'USDC'`). Selects the
    *   token-specific EIP-712 domain (name + verifyingContract). USDC remains
    *   byte-identical to the legacy `EIP712_DOMAINS[network]` domain.
+   * @param verifyingContract - The resolved token contract address to sign
+   *   against. Passed through to the EIP-712 domain's `verifyingContract` so an
+   *   operator-injected address (absent from the public registry, e.g. EURC
+   *   mainnet) signs correctly. When omitted, the public registry address is used.
    * @returns The payload string: mock `payer:<botId>` when no wallet key is set,
    *   otherwise a JSON EIP-3009 signed authorization.
    * @throws {Error} when the token has no EIP-712 domain on the given network.
@@ -487,13 +514,14 @@ export class PayBotClient {
     payTo: string,
     amountBaseUnits: string,
     network: string,
-    symbol = 'USDC'
+    symbol = 'USDC',
+    verifyingContract?: string
   ): Promise<string> {
     if (!this.config.walletPrivateKey) {
       return `payer:${this.config.botId}`;
     }
 
-    const domain = getEip712Domain(network, symbol);
+    const domain = getEip712Domain(network, symbol, verifyingContract);
     if (!domain) {
       throw new Error(`No EIP-712 domain for network: ${network} / token: ${symbol}`);
     }

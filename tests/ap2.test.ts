@@ -43,7 +43,9 @@ function buildMandate(
 }
 
 const USDC_BASE_ADDRESS = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
-const EURC_BASE_ADDRESS = '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42';
+// EURC Base Sepolia testnet — the only EURC address in the public registry.
+// EURC mainnet is operator-private and intentionally not resolvable here.
+const EURC_SEPOLIA_ADDRESS = '0x808456652fdb597867f38412077A9182bf77359F';
 
 describe('ap2MandateToPaymentRequirements', () => {
   it('[UNIT] ap2MandateToPaymentRequirements — should translate a USDC mandate when all fields present', () => {
@@ -57,13 +59,23 @@ describe('ap2MandateToPaymentRequirements', () => {
     expect(reqs.maxTimeoutSeconds).toBe(300); // default when no expiresAt
   });
 
-  it('[UNIT] ap2MandateToPaymentRequirements — should resolve the EURC asset when currency is EURC', () => {
+  it('[UNIT] ap2MandateToPaymentRequirements — should resolve the EURC testnet asset when currency is EURC', () => {
     const reqs = ap2MandateToPaymentRequirements(
-      buildMandate({ currency: 'EURC', amount: '2500000' }),
+      buildMandate({ currency: 'EURC', amount: '2500000', network: 'eip155:84532' }),
     );
     expect(reqs.token).toBe('EURC');
     expect(reqs.amount).toBe('2500000');
-    expect(reqs.asset).toBe(`eip155:8453/erc20:${EURC_BASE_ADDRESS}`);
+    expect(reqs.asset).toBe(`eip155:84532/erc20:${EURC_SEPOLIA_ADDRESS}`);
+  });
+
+  it('[UNIT] ap2MandateToPaymentRequirements — should reject EURC mainnet as UNSUPPORTED_NETWORK (operator-private)', () => {
+    // EURC mainnet address is intentionally absent from the public registry, so
+    // it is not resolvable here and must surface UNSUPPORTED_NETWORK.
+    expect(() =>
+      ap2MandateToPaymentRequirements(
+        buildMandate({ currency: 'EURC', amount: '2500000', network: 'eip155:8453' }),
+      ),
+    ).toThrow(/UNSUPPORTED_NETWORK|not available on network/i);
   });
 
   it('[UNIT] ap2MandateToPaymentRequirements — should derive maxTimeoutSeconds from a future expiresAt', () => {
