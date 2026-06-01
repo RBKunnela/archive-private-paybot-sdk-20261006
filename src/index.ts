@@ -31,6 +31,8 @@ export type {
   Receipt,
   PaymentRequiredResponse,
   PaymentRequirements,
+  PaymentScheme,
+  PaymentResponseConfirmation,
   MerchantInfo,
   PaymentMetadata,
   PaymentIntentHeader,
@@ -44,12 +46,27 @@ export {
   agentIdentityFromConfig,
   agentIdentityFromRegisterResult,
 } from './types.js';
-export type { NetworkConfig } from './networks.js';
+export type {
+  PayBotTracer,
+  PayBotSpan,
+  TelemetryConfig,
+} from './telemetry.js';
+export type { NetworkConfig, Caip2 } from './networks.js';
 export {
   NETWORKS,
   USDC_CONFIG,
   getNetwork,
   getSupportedNetworks,
+  parseCaip2,
+  isSupportedCaip2,
   EIP712_DOMAINS,
   EIP3009_TYPES,
 } from './networks.js';
+export {
+  verifyWebhookSignature,
+  signWebhookPayload,
+} from './webhook.js';
+export type {
+  VerifyWebhookSignatureOptions,
+  SignWebhookPayloadOptions,
+} from './webhook.js';

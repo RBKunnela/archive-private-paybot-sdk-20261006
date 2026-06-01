@@ -19,6 +19,7 @@ import type {
 import { getErrorMessage, PayBotApiError } from './errors.js';
 import { generateEIP3009Nonce } from './crypto.js';
 import { EIP712_DOMAINS, EIP3009_TYPES, NETWORKS } from './networks.js';
+import { withSpan, type TelemetryConfig } from './telemetry.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 /**
@@ -45,6 +46,8 @@ export class PayBotClient {
   private config: Required<Pick<PayBotConfig, 'apiKey' | 'facilitatorUrl' | 'botId' | 'operatorId'>> & { walletPrivateKey?: string };
   private maxRetries: number;
   private timeout: number;
+  /** Opt-in telemetry config; undefined means tracing is a complete no-op. */
+  private telemetry?: TelemetryConfig;
 
   constructor(config: PayBotConfig) {
     if (!config.apiKey || typeof config.apiKey !== 'string') {
@@ -73,6 +76,7 @@ export class PayBotClient {
     };
     this.maxRetries = config.maxRetries ?? 1;
     this.timeout = config.timeout ?? 30_000;
+    this.telemetry = config.telemetry;
   }
 
   /**
@@ -180,123 +184,158 @@ export class PayBotClient {
    * Returns a PaymentResult with `success: false` on failure (never throws).
    */
   async pay(request: PaymentRequest): Promise<PaymentResult> {
-    try {
-      const network = request.network ?? 'eip155:84532';
-      const networkConfig = NETWORKS[network];
-      const tokenContract = request.tokenContract ?? networkConfig?.usdcAddress ?? '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
-      const amountBaseUnits = this.usdToBaseUnits(request.amount);
-
-      const payloadString = await this.buildPaymentPayload(
-        request.payTo,
-        amountBaseUnits,
-        network
-      );
-
-      const payloadBody = {
-        x402Version: 1,
-        resource: request.resource,
-        accepted: true,
-        payload: payloadString,
-      };
-
-      const requirements = {
-        scheme: 'exact',
+    const network = request.network ?? 'eip155:84532';
+    // Wrap the whole pay() body in the top-level span. A returned failure
+    // PaymentResult is reported as an OK span with success=false (nothing was
+    // thrown); only thrown errors mark the span ERROR (handled in withSpan).
+    return withSpan(
+      this.telemetry,
+      'client.pay',
+      {
         network,
-        asset: `${network}/erc20:${tokenContract}`,
-        amount: amountBaseUnits,
-        payTo: request.payTo,
-        maxTimeoutSeconds: 300,
-      };
+        amount: request.amount,
+        bot_id: this.config.botId,
+      },
+      async (paySpan): Promise<PaymentResult> => {
+        try {
+          const networkConfig = NETWORKS[network];
+          const tokenContract = request.tokenContract ?? networkConfig?.usdcAddress ?? '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
+          const amountBaseUnits = this.usdToBaseUnits(request.amount);
 
-      // Step 1: Verify
-      let verifyData: Record<string, unknown>;
-      try {
-        verifyData = await this._request<Record<string, unknown>>('/verify', {
-          method: 'POST',
-          body: {
-            botId: this.config.botId,
-            payload: payloadBody,
-            requirements,
-          },
-        });
-      } catch (error: unknown) {
-        if (error instanceof PayBotApiError) {
+          const payloadString = await withSpan(
+            this.telemetry,
+            'x402.sign',
+            { network },
+            () => this.buildPaymentPayload(request.payTo, amountBaseUnits, network)
+          );
+
+          const payloadBody = {
+            x402Version: 1,
+            resource: request.resource,
+            accepted: true,
+            payload: payloadString,
+          };
+
+          const requirements = {
+            scheme: 'exact',
+            network,
+            asset: `${network}/erc20:${tokenContract}`,
+            amount: amountBaseUnits,
+            payTo: request.payTo,
+            maxTimeoutSeconds: 300,
+          };
+
+          // Step 1: Verify (challenge)
+          let verifyData: Record<string, unknown>;
+          try {
+            verifyData = await withSpan(
+              this.telemetry,
+              'x402.challenge',
+              {},
+              () => this._request<Record<string, unknown>>('/verify', {
+                method: 'POST',
+                body: {
+                  botId: this.config.botId,
+                  payload: payloadBody,
+                  requirements,
+                },
+              })
+            );
+          } catch (error: unknown) {
+            if (error instanceof PayBotApiError) {
+              paySpan?.setAttribute('success', false);
+              return {
+                success: false,
+                grossAmount: '0',
+                netAmount: '0',
+                commissionAmount: '0',
+                commissionRate: 0,
+                error: error.message,
+                errorCode: error.code,
+                errorDetails: error.details,
+              };
+            }
+            throw error;
+          }
+
+          const settlementToken = verifyData.settlementToken as string | undefined;
+          if (!settlementToken) {
+            paySpan?.setAttribute('success', false);
+            return {
+              success: false,
+              grossAmount: '0',
+              netAmount: '0',
+              commissionAmount: '0',
+              commissionRate: 0,
+              error: 'Verify response missing settlement token',
+            };
+          }
+
+          // Step 2: Settle
+          let settleData: Record<string, unknown>;
+          try {
+            settleData = await withSpan(
+              this.telemetry,
+              'x402.settle',
+              {},
+              () => this._request<Record<string, unknown>>('/settle', {
+                method: 'POST',
+                body: {
+                  botId: this.config.botId,
+                  settlementToken,
+                  payload: payloadBody,
+                  requirements: verifyData.modifiedRequirements ?? requirements,
+                  commission: verifyData.commission,
+                },
+              })
+            );
+          } catch (error: unknown) {
+            if (error instanceof PayBotApiError) {
+              paySpan?.setAttribute('success', false);
+              return {
+                success: false,
+                grossAmount: '0',
+                netAmount: '0',
+                commissionAmount: '0',
+                commissionRate: 0,
+                error: error.message,
+                errorCode: error.code,
+                errorDetails: error.details,
+              };
+            }
+            throw error;
+          }
+
+          const commissionData = verifyData.commission as Record<string, unknown> | undefined;
+          const txHash = settleData.transaction as string | undefined;
+
+          paySpan?.setAttribute('success', true);
+          if (txHash) {
+            paySpan?.setAttribute('tx_hash', txHash);
+          }
+
+          return {
+            success: true,
+            txHash,
+            grossAmount: String(commissionData?.grossAmount ?? '0'),
+            netAmount: String(commissionData?.netAmount ?? '0'),
+            commissionAmount: String(commissionData?.commissionAmount ?? '0'),
+            commissionRate: Number(commissionData?.commissionRate ?? 0),
+            network: settleData.network as string | undefined,
+          };
+        } catch (error: unknown) {
+          paySpan?.setAttribute('success', false);
           return {
             success: false,
             grossAmount: '0',
             netAmount: '0',
             commissionAmount: '0',
             commissionRate: 0,
-            error: error.message,
-            errorCode: error.code,
-            errorDetails: error.details,
+            error: getErrorMessage(error),
           };
         }
-        throw error;
       }
-
-      const settlementToken = verifyData.settlementToken as string | undefined;
-      if (!settlementToken) {
-        return {
-          success: false,
-          grossAmount: '0',
-          netAmount: '0',
-          commissionAmount: '0',
-          commissionRate: 0,
-          error: 'Verify response missing settlement token',
-        };
-      }
-
-      // Step 2: Settle
-      let settleData: Record<string, unknown>;
-      try {
-        settleData = await this._request<Record<string, unknown>>('/settle', {
-          method: 'POST',
-          body: {
-            botId: this.config.botId,
-            settlementToken,
-            payload: payloadBody,
-            requirements: verifyData.modifiedRequirements ?? requirements,
-            commission: verifyData.commission,
-          },
-        });
-      } catch (error: unknown) {
-        if (error instanceof PayBotApiError) {
-          return {
-            success: false,
-            grossAmount: '0',
-            netAmount: '0',
-            commissionAmount: '0',
-            commissionRate: 0,
-            error: error.message,
-            errorCode: error.code,
-            errorDetails: error.details,
-          };
-        }
-        throw error;
-      }
-
-      const commissionData = verifyData.commission as Record<string, unknown> | undefined;
-
-      return {
-        success: true,
-        txHash: settleData.transaction as string | undefined,
-        grossAmount: String(commissionData?.grossAmount ?? '0'),
-        netAmount: String(commissionData?.netAmount ?? '0'),
-        commissionAmount: String(commissionData?.commissionAmount ?? '0'),
-        commissionRate: Number(commissionData?.commissionRate ?? 0),
-        network: settleData.network as string | undefined,
-      };
-    } catch (error: unknown) {
-      return {
-        success: false,
-        grossAmount: '0',
-        netAmount: '0',
-        commissionAmount: '0',
-        commissionRate: 0,
-        error: getErrorMessage(error),
-      };
-    }
+    );
   }
 
   /**

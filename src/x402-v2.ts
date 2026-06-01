@@ -19,12 +19,13 @@ import type {
   Receipt,
   PaymentRequiredResponse,
   PaymentRequirements,
+  PaymentResponseConfirmation,
 } from './types.js';
 import { getErrorMessage, PayBotApiError } from './errors.js';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { PrivateKeyAccount } from 'viem/accounts';
 import { generateEIP3009Nonce } from './crypto.js';
-import { EIP712_DOMAINS, EIP3009_TYPES } from './networks.js';
+import { EIP712_DOMAINS, EIP3009_TYPES, parseCaip2 } from './networks.js';
 
 /**
  * x402 v2 Handler - Complete protocol implementation
@@ -52,6 +53,25 @@ export class X402Handler {
       );
     }
 
+    // x402 v2 renamed the negotiation header to PAYMENT-REQUIRED (base64 of the
+    // requirements). Prefer it when present; otherwise fall back to the legacy
+    // `Payment-Intent` (`x402:v2:<base64>`) path so existing servers/tests keep
+    // working. This is purely additive.
+    const v2Header = X402Handler.readHeaderCaseInsensitive(
+      response.headers,
+      'PAYMENT-REQUIRED',
+    );
+    if (v2Header) {
+      const paymentIntent = this.parsePaymentRequiredHeader(v2Header);
+      const body = this.parsePaymentResponseBody(response.body);
+      return {
+        paymentIntent,
+        requirements: body.requirements,
+        merchant: body.merchant,
+        meta: body.meta,
+      };
+    }
+
     const paymentIntentHeader = this.extractPaymentIntentHeader(response.headers);
     const paymentIntent = this.parsePaymentIntent(paymentIntentHeader);
 
@@ -63,6 +83,68 @@ export class X402Handler {
       merchant: body.merchant,
       meta: body.meta,
     };
+  }
+
+  /**
+   * Read a header value by name, case-insensitively, from a plain headers
+   * record. Returns `undefined` when no casing variant is present.
+   *
+   * @param headers - The HTTP headers record.
+   * @param name - The canonical header name (e.g. `'PAYMENT-REQUIRED'`).
+   * @returns The header value, or `undefined`.
+   */
+  private static readHeaderCaseInsensitive(
+    headers: Record<string, string>,
+    name: string,
+  ): string | undefined {
+    const target = name.toLowerCase();
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === target) {
+        return headers[key];
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Parse an x402 v2 `PAYMENT-REQUIRED` header. The value is the base64 of the
+   * JSON payment requirements (no `x402:v2:` prefix — that prefix is the legacy
+   * `Payment-Intent` format). The decoded JSON may be either a full
+   * `PaymentIntent` or a bare `PaymentRequirements`; in the latter case we wrap
+   * it into a minimal `PaymentIntent` so downstream code sees a uniform shape.
+   *
+   * @param headerValue - The base64-encoded header value.
+   * @returns A `PaymentIntent`.
+   * @throws {PayBotApiError} `INVALID_PAYMENT_INTENT_FORMAT` (HTTP 402) on bad base64/JSON.
+   */
+  private parsePaymentRequiredHeader(headerValue: string): PaymentIntent {
+    try {
+      const decoded = Buffer.from(headerValue, 'base64').toString('utf-8');
+      const parsed = JSON.parse(decoded) as Record<string, unknown>;
+
+      // Full PaymentIntent? (has its own requirements) — use as-is.
+      if (parsed.requirements && typeof parsed.requirements === 'object') {
+        return parsed as unknown as PaymentIntent;
+      }
+
+      // Otherwise treat the payload itself as bare PaymentRequirements and
+      // synthesize a minimal v2 PaymentIntent envelope around it.
+      const now = new Date();
+      return {
+        intentId: `intent_${now.getTime()}`,
+        protocol: 'x402',
+        requirements: parsed as unknown as PaymentIntent['requirements'],
+        version: '2.0',
+        createdAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + 300_000).toISOString(),
+      };
+    } catch (error) {
+      throw new PayBotApiError(
+        `Failed to parse PAYMENT-REQUIRED header: ${getErrorMessage(error)}`,
+        'INVALID_PAYMENT_INTENT_FORMAT',
+        402,
+      );
+    }
   }
 
   /**
@@ -159,21 +241,46 @@ export class X402Handler {
    *   r.signature;  // '0x...130 hex chars'
    *   r.signedData; // { from, to, value, validAfter, validBefore, nonce, signature }
    */
+  /**
+   * Resolve the EIP-712 domain for a requirements' network, validating the
+   * CAIP-2 shape first.
+   *
+   * Two distinct failure modes are surfaced:
+   *   - A malformed CAIP-2 string (e.g. `'not-a-network'`, `'solana:foo'`) →
+   *     `INVALID_CAIP2` (bubbled from {@link parseCaip2}).
+   *   - A well-formed `eip155:<chainId>` with no registered domain (e.g.
+   *     `'eip155:999999'`) → `UNSUPPORTED_NETWORK` (preserves the historical
+   *     behavior the regression tests lock in).
+   *
+   * @param requirements - Payment requirements carrying the `network`.
+   * @returns The resolved EIP-712 domain.
+   * @throws {PayBotApiError} `INVALID_CAIP2` (400) or `UNSUPPORTED_NETWORK` (402).
+   */
+  private resolveDomain(
+    requirements: PaymentRequirements,
+  ): { name: string; version: string; chainId: number; verifyingContract: `0x${string}` } {
+    const network = requirements.network || 'eip155:8453';
+
+    // Throws INVALID_CAIP2 for malformed network strings.
+    parseCaip2(network);
+
+    const domain = EIP712_DOMAINS[network];
+    if (!domain) {
+      throw new PayBotApiError(
+        `No EIP-712 domain for network: ${network}`,
+        'UNSUPPORTED_NETWORK',
+        402,
+      );
+    }
+    return domain;
+  }
+
   private async signX402(
     account: PrivateKeyAccount,
     requirements: PaymentRequirements,
   ): Promise<{ signature: string; signedData: Record<string, unknown> }> {
     // x402 native signing (EIP-3009 TransferWithAuthorization)
-    const network = requirements.network || 'eip155:8453';
-    const domain = EIP712_DOMAINS[network];
-
-    if (!domain) {
-      throw new PayBotApiError(
-        `No EIP-712 domain for network: ${network}`,
-        'UNSUPPORTED_NETWORK',
-        402
-      );
-    }
+    const domain = this.resolveDomain(requirements);
 
     const nonce = generateEIP3009Nonce();
     const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
@@ -284,6 +391,138 @@ export class X402Handler {
   }
 
   /**
+   * Sign an x402 v2 `upto` (metered / usage-billing) authorization.
+   *
+   * The `upto` scheme is x402 v2's answer to streaming: instead of charging a
+   * fixed amount, the payer signs an EIP-3009 `TransferWithAuthorization` for
+   * the MAXIMUM amount, authorizing the merchant to capture UP TO that max as
+   * usage accrues. The capped maximum is `requirements.maxAmount` when present,
+   * otherwise it falls back to `requirements.amount`.
+   *
+   * The signed `value` equals the authorized max (NOT the eventual capture).
+   * The returned `signedData` carries `scheme: 'upto'` and a `maxAmount` marker
+   * so a caller can tell this is a capped authorization, not an exact charge.
+   *
+   * @param account - viem `PrivateKeyAccount` derived from the handler's wallet private key.
+   * @param requirements - Payment requirements. `maxAmount` (else `amount`) is the cap.
+   * @returns Object with the EIP-712 `signature` and an upto-shaped `signedData`
+   *          containing `{ from, to, value, maxAmount, scheme: 'upto',
+   *          validAfter, validBefore, nonce, signature }`.
+   * @throws {PayBotApiError} `INVALID_CAIP2` (HTTP 400) when the network string
+   *          is not a well-formed `eip155:<chainId>`.
+   * @throws {PayBotApiError} `UNSUPPORTED_NETWORK` (HTTP 402) when the network
+   *          is well-formed but has no registered EIP-712 domain.
+   *
+   * @example
+   *   const r = await handler.signUpto(account, { ...reqs, scheme: 'upto', maxAmount: '5000000' });
+   *   r.signedData.value;     // '5000000' — signs for the MAX
+   *   r.signedData.scheme;    // 'upto'
+   *   r.signedData.maxAmount; // '5000000'
+   */
+  async signUpto(
+    account: PrivateKeyAccount,
+    requirements: PaymentRequirements,
+  ): Promise<{ signature: string; signedData: Record<string, unknown> }> {
+    const domain = this.resolveDomain(requirements);
+
+    // WHY: `upto` authorizes the MAX, not the requested amount. The cap is
+    // `maxAmount` when the merchant specified one, else the plain `amount`.
+    const authorizedMax = requirements.maxAmount ?? requirements.amount;
+
+    const nonce = generateEIP3009Nonce();
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    const validAfter = BigInt(0);
+    const validBefore = nowSeconds + BigInt(3600); // 1 hour from now
+
+    const value = BigInt(authorizedMax);
+
+    const signature = await account.signTypedData({
+      domain,
+      types: EIP3009_TYPES,
+      primaryType: 'TransferWithAuthorization',
+      message: {
+        from: account.address,
+        to: requirements.payTo as `0x${string}`,
+        value,
+        validAfter,
+        validBefore,
+        nonce,
+      },
+    });
+
+    const signedData: Record<string, unknown> = {
+      from: account.address,
+      to: requirements.payTo,
+      value: authorizedMax,
+      // Markers so the caller knows this is a capped authorization.
+      scheme: 'upto',
+      maxAmount: authorizedMax,
+      validAfter: validAfter.toString(),
+      validBefore: validBefore.toString(),
+      nonce,
+      signature,
+    };
+
+    return { signature, signedData };
+  }
+
+  /**
+   * Validate that a captured amount does not exceed the authorized maximum of
+   * an `upto` authorization.
+   *
+   * Amounts are base-unit decimal strings (USDC has 6 decimals); comparison is
+   * done with `BigInt` to avoid float rounding. A capture exactly equal to the
+   * max is allowed; anything greater is an overcharge.
+   *
+   * @param authorizedMax - The signed maximum (base-unit decimal string).
+   * @param captured - The amount the merchant wants to capture (base-unit decimal string).
+   * @returns The captured amount as a normalized base-unit string when valid.
+   * @throws {PayBotApiError} `UPTO_OVERCHARGE` (HTTP 402) when `captured > authorizedMax`.
+   * @throws {PayBotApiError} `INVALID_AMOUNT` (HTTP 400) when either value is not a
+   *          non-negative integer string.
+   *
+   * @example
+   *   X402Handler.validateUptoCapture('5000000', '3000000'); // '3000000'
+   *   X402Handler.validateUptoCapture('5000000', '6000000'); // throws UPTO_OVERCHARGE
+   */
+  static validateUptoCapture(authorizedMax: string, captured: string): string {
+    const max = X402Handler.parseBaseUnitAmount(authorizedMax, 'authorizedMax');
+    const cap = X402Handler.parseBaseUnitAmount(captured, 'captured');
+
+    if (cap > max) {
+      throw new PayBotApiError(
+        `upto capture ${captured} exceeds authorized max ${authorizedMax}`,
+        'UPTO_OVERCHARGE',
+        402,
+        { authorizedMax, captured },
+      );
+    }
+
+    return cap.toString();
+  }
+
+  /**
+   * Parse a base-unit amount (non-negative integer decimal string) into a
+   * `BigInt`, throwing a typed error on malformed input.
+   *
+   * @param value - The candidate amount string.
+   * @param label - Field name for error messages.
+   * @returns The parsed `BigInt`.
+   * @throws {PayBotApiError} `INVALID_AMOUNT` (HTTP 400) when not a non-negative integer.
+   */
+  private static parseBaseUnitAmount(value: string, label: string): bigint {
+    if (typeof value !== 'string' || !/^\d+$/.test(value)) {
+      throw new PayBotApiError(
+        `Invalid ${label}: expected a non-negative integer string, got '${value}'`,
+        'INVALID_AMOUNT',
+        400,
+        { [label]: value },
+      );
+    }
+    return BigInt(value);
+  }
+
+  /**
    * Sign a payment payload using EIP-712 typed data.
    *
    * Dispatches to the protocol-specific helper:
@@ -334,6 +573,20 @@ export class X402Handler {
 
     let signature: string;
     let signedData: Record<string, unknown>;
+
+    // x402 v2 `upto` (metered/usage) scheme is dispatched on the scheme, not
+    // the protocol: it signs an EIP-3009 authorization for the MAXIMUM amount.
+    // This is additive — existing payloads carry scheme 'exact'/'max'/'range'
+    // and fall through to the protocol switch below unchanged.
+    if (requirements.scheme === 'upto') {
+      const r = await this.signUpto(account, requirements);
+      return {
+        protocol,
+        signedData: r.signedData,
+        signature: r.signature,
+        timestamp: Date.now(),
+      };
+    }
 
     switch (protocol) {
       case 'x402': {
@@ -401,8 +654,12 @@ export class X402Handler {
       headers['Authorization'] = `Bearer ${authToken}`;
     }
 
-    // Add Payment-Intent-Authorization header
-    headers['Payment-Intent-Authorization'] = this.encodeSignedPayment(signed);
+    // Add Payment-Intent-Authorization header (legacy) + the x402 v2
+    // PAYMENT-SIGNATURE header (base64 of the signed payload). Both are sent so
+    // v1 and v2 facilitators can each read the form they expect — additive.
+    const encoded = this.encodeSignedPayment(signed);
+    headers['Payment-Intent-Authorization'] = encoded;
+    headers['PAYMENT-SIGNATURE'] = X402Handler.encodePaymentSignatureHeader(signed);
 
     try {
       const response = await fetch(paymentEndpoint, {
@@ -460,6 +717,94 @@ export class X402Handler {
     });
 
     return `x402:v2:${Buffer.from(payload).toString('base64')}`;
+  }
+
+  /**
+   * Encode a signed payment for the x402 v2 `PAYMENT-SIGNATURE` header.
+   *
+   * Unlike {@link encodeSignedPayment} (which prefixes `x402:v2:` for the legacy
+   * `Payment-Intent-Authorization` header), the v2 spec header value is the bare
+   * base64 of the signed payload JSON — no prefix.
+   *
+   * @param signed - The signed payment to encode.
+   * @returns Base64 of the signed-payload JSON.
+   */
+  static encodePaymentSignatureHeader(signed: SignedPayment): string {
+    const payload = JSON.stringify({
+      protocol: signed.protocol,
+      signedData: signed.signedData,
+      signature: signed.signature,
+      timestamp: signed.timestamp,
+    });
+    return Buffer.from(payload).toString('base64');
+  }
+
+  /**
+   * Parse an x402 v2 `PAYMENT-RESPONSE` header into a settlement confirmation.
+   *
+   * The v2 spec returns settlement results in a `PAYMENT-RESPONSE` header whose
+   * value is base64-encoded JSON. This helper decodes it and projects the
+   * receipt-relevant fields (`receiptId`, `status`, optional `transactionId`).
+   *
+   * Tolerant of common field-name variants seen across facilitators
+   * (`receiptId`/`receipt_id`, `transactionId`/`transaction_id`/`txHash`).
+   *
+   * @param headerValue - The base64-encoded `PAYMENT-RESPONSE` header value.
+   * @returns A {@link PaymentResponseConfirmation}.
+   * @throws {PayBotApiError} `INVALID_PAYMENT_RESPONSE` (HTTP 502) when the
+   *          header is not valid base64 JSON or lacks a `receiptId`.
+   *
+   * @example
+   *   const b64 = Buffer.from(JSON.stringify({ receiptId: 'r1', status: 'confirmed' })).toString('base64');
+   *   X402Handler.parsePaymentResponseHeader(b64); // { receiptId: 'r1', status: 'confirmed' }
+   */
+  static parsePaymentResponseHeader(
+    headerValue: string,
+  ): PaymentResponseConfirmation {
+    let parsed: Record<string, unknown>;
+    try {
+      const decoded = Buffer.from(headerValue, 'base64').toString('utf-8');
+      parsed = JSON.parse(decoded) as Record<string, unknown>;
+    } catch (error) {
+      throw new PayBotApiError(
+        `Failed to parse PAYMENT-RESPONSE header: ${getErrorMessage(error)}`,
+        'INVALID_PAYMENT_RESPONSE',
+        502,
+      );
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      throw new PayBotApiError(
+        'PAYMENT-RESPONSE header did not decode to an object',
+        'INVALID_PAYMENT_RESPONSE',
+        502,
+      );
+    }
+
+    const receiptId = (parsed.receiptId ?? parsed.receipt_id) as
+      | string
+      | undefined;
+    if (typeof receiptId !== 'string' || receiptId.length === 0) {
+      throw new PayBotApiError(
+        'PAYMENT-RESPONSE header missing receiptId',
+        'INVALID_PAYMENT_RESPONSE',
+        502,
+      );
+    }
+
+    const rawStatus = (parsed.status as string | undefined) ?? 'pending';
+    const status: PaymentResponseConfirmation['status'] =
+      rawStatus === 'confirmed' || rawStatus === 'failed' ? rawStatus : 'pending';
+
+    const transactionId = (parsed.transactionId ??
+      parsed.transaction_id ??
+      parsed.txHash) as string | undefined;
+
+    return {
+      receiptId,
+      status,
+      ...(transactionId ? { transactionId } : {}),
+    };
   }
 
   /**

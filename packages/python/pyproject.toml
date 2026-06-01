@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paybot-sdk"
-version = "0.1.0a1"
+version = "0.1.0"
 description = "Python port of paybot-sdk — USDC payments for AI agents via the x402 protocol."
 readme = "README.md"
 license = { text = "MIT" }
@@ -30,8 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 signing = [
-    # Kept as a compatibility extra for consumers already installing the
-    # signing-ready variant while the remaining EIP-3009 runtime lands.
+    # Required for real-mode EIP-3009 signing in PayBotClient.pay().
     "eth-account>=0.13,<1.0",
     "eth-typing>=6.0.0,<7",
 ]

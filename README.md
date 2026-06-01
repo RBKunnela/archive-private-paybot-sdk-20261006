@@ -145,6 +145,71 @@ const baseSepolia = getNetwork('eip155:84532');
 console.log(baseSepolia?.name); // 'Base Sepolia'
 ```
 
+## Webhook Signature Verification
+
+Verify inbound webhooks from the facilitator (HMAC-SHA256, constant-time compare, replay-window guard). No extra dependency — uses Node's built-in `crypto`.
+
+```typescript
+import { verifyWebhookSignature } from 'paybot-sdk';
+
+app.post('/paybot/webhook', (req, res) => {
+  const valid = verifyWebhookSignature({
+    payload: req.rawBody,                       // raw string/Buffer, exactly as received
+    signature: req.headers['paybot-signature'], // 't=<unix_ts>,v1=<hmac_hex>'
+    secret: process.env.PAYBOT_WEBHOOK_SECRET,
+    tolerance: 300,                             // optional replay window in seconds (default 300)
+  });
+  if (!valid) return res.status(400).send('invalid signature');
+  // ...handle event
+  res.sendStatus(200);
+});
+```
+
+The signing string is `` `${t}.${payload}` ``; the same algorithm is implemented identically in the Python SDK, so a server-signed webhook verifies byte-for-byte in either runtime. `signWebhookPayload({ payload, secret })` produces a header value for TS-based senders and tests.
+
+## OpenTelemetry (opt-in)
+
+Pass any OpenTelemetry-compatible tracer to emit spans around the payment lifecycle. When no tracer is supplied, telemetry is a zero-overhead no-op — `@opentelemetry/api` is **not** a dependency of this SDK.
+
+```typescript
+import { trace } from '@opentelemetry/api';
+
+const client = new PayBotClient({
+  apiKey: 'pb_...',
+  botId: 'my-bot',
+  walletPrivateKey: '0x...',
+  telemetry: { tracer: trace.getTracer('my-bot'), prefix: 'paybot.' },
+});
+```
+
+Spans emitted per `pay()`: `paybot.client.pay`, `paybot.x402.sign`, `paybot.x402.challenge`, `paybot.x402.settle` — with `network`, `amount`, `bot_id`, `tx_hash`, and `success` attributes. A returned payment failure is an OK span with `success=false`; only thrown errors become span ERROR + `recordException`.
+
+## x402 v2 conformance
+
+Tracks the [x402-foundation](https://github.com/x402-foundation/x402) spec: v2 `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE` headers (the legacy `Payment-Intent` path still works), CAIP-2 network identifiers, and the `upto` (metered/usage) scheme alongside `exact`.
+
+```typescript
+import { parseCaip2, isSupportedCaip2 } from 'paybot-sdk';
+
+parseCaip2('eip155:8453');        // { namespace: 'eip155', reference: '8453' }
+isSupportedCaip2('eip155:8453');  // true
+
+// 'upto' authorizes a capture ceiling; the facilitator settles the actual usage <= max.
+// X402Handler.validateUptoCapture(authorizedMax, captured) throws UPTO_OVERCHARGE if exceeded.
+```
+
+## Python SDK
+
+A Python port lives in [`packages/python`](./packages/python) (`paybot-sdk` on PyPI, `>=3.10`). Mirrors the TS client surface, real EIP-3009 signing via `eth-account`, and the identical webhook verification contract.
+
+```python
+from paybot_sdk import PayBotClient, PayBotConfig, PaymentRequest, verify_webhook_signature
+
+client = PayBotClient(PayBotConfig(api_key="pb_...", bot_id="my-bot", wallet_private_key="0x..."))
+result = await client.pay(PaymentRequest(resource="https://api.example.com/data",
+                                         amount="0.01", pay_to="0x...."))
+```
+
 ## MCP Integration
 
 For AI agent frameworks, use [paybot-mcp](https://github.com/RBKunnela/paybot-mcp) which wraps this SDK as an MCP server.

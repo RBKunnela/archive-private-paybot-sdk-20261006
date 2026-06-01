@@ -1,22 +1,22 @@
 """PayBotClient — Python port of the TS SDK entry point.
 
-**Status:** scaffold. The HTTP surface and configuration validation are complete
-and match the TS SDK in `../../src/client.ts` 1:1 on endpoint paths, HTTP
-methods, and body shapes. The EIP-3009 signing inside `pay()` (`_sign_payload`)
-intentionally raises `NotImplementedError` in this scaffold PR so the type
-surface and facilitator wire contract can be reviewed first. The signing
-runtime port lands in PR-2.
+The HTTP surface and configuration validation match the TS SDK in
+`../../src/client.ts` 1:1 on endpoint paths, HTTP methods, and body shapes.
+The EIP-3009 signing inside `pay()` (`_sign_payload`) is implemented using
+`eth-account` (install the `signing` extra) and produces a payload blob
+byte-for-byte compatible with the TS SDK's `buildPaymentPayload`.
 
-Methods that don't touch on-chain signing (`register`, `balance`, `history`,
-`set_limits`, `health`, `commission_*`, `create_api_key`, `list_api_keys`,
-`revoke_api_key`) are fully implemented and call the same endpoints as TS.
-Anyone using the SDK in mock mode (no `wallet_private_key`) gets the full
-surface today.
+All methods (`register`, `balance`, `history`, `set_limits`, `health`,
+`commission_*`, `create_api_key`, `list_api_keys`, `revoke_api_key`, and the
+real-mode signing `pay()`) call the same endpoints and use the same wire
+contract as TS. Mock mode (no `wallet_private_key`) and real mode (EIP-3009
+signing) are both fully supported.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode, urljoin
 
@@ -73,7 +73,7 @@ class PayBotClient:
         client = PayBotClient(PayBotConfig(api_key="pb_test_...", bot_id="my-bot"))
         await client.register()
 
-    Usage (real mode, EIP-3009 signing — runtime ships in PR-2):
+    Usage (real mode, EIP-3009 signing — requires the `signing` extra):
 
         client = PayBotClient(PayBotConfig(
             api_key="pb_test_...",
@@ -261,10 +261,6 @@ class PayBotClient:
         In real mode: signs EIP-3009 TransferWithAuthorization off-chain, posts
         the payload to `/verify` → receives a `settlementToken` → posts to
         `/settle` to finalize. Matches the two-step flow in client.ts:182.
-
-        SCAFFOLD NOTE: the EIP-3009 signing path (`_sign_payload`) raises in the
-        scaffold PR; the verify/settle wire is implemented but only exercised
-        in mock mode until signing lands. PR-2 fills in the signing runtime.
         """
         network_id = request.network or "eip155:84532"
         network = NETWORKS.get(network_id)
@@ -282,25 +278,17 @@ class PayBotClient:
         token_contract = request.token_contract or network.usdc_address
         amount_base_units = self._to_base_units(request.amount, 6)
 
-        payload_string: Optional[str] = None
-        if self._wallet_private_key is not None:
-            try:
-                payload_string = await self._sign_payload(
-                    request=request,
-                    amount_base_units=amount_base_units,
-                    token_contract=token_contract,
-                    network_id=network_id,
-                )
-            except NotImplementedError:
-                return PaymentResult(
-                    success=False,
-                    gross_amount="0",
-                    net_amount="0",
-                    commission_amount="0",
-                    commission_rate=0,
-                    error="EIP-3009 signing not implemented in scaffold PR",
-                    error_code="NOT_IMPLEMENTED_SCAFFOLD",
-                )
+        # Mock mode (no wallet_private_key): mirror TS buildPaymentPayload's
+        # `payer:<botId>` placeholder. Real mode: sign EIP-3009 off-chain.
+        if self._wallet_private_key is None:
+            payload_string: Optional[str] = f"payer:{self._bot_id}"
+        else:
+            payload_string = await self._sign_payload(
+                request=request,
+                amount_base_units=amount_base_units,
+                token_contract=token_contract,
+                network_id=network_id,
+            )
 
         payload_body: Dict[str, Any] = {
             "x402Version": 1,
@@ -398,17 +386,88 @@ class PayBotClient:
         token_contract: str,
         network_id: str,
     ) -> str:
-        """Sign an EIP-3009 TransferWithAuthorization for the given payment.
+        """Sign an EIP-3009 ``TransferWithAuthorization`` for the given payment.
 
-        SCAFFOLD: raises NotImplementedError. The runtime port lands in PR-2.
+        Builds EIP-712 typed-data from ``EIP712_DOMAINS[network_id]`` +
+        ``EIP3009_TYPES`` and signs it off-chain with the configured wallet
+        private key. The returned string is the JSON ``payload`` blob the
+        facilitator expects — byte-for-byte the same shape produced by the TS
+        SDK's ``client.ts:buildPaymentPayload`` (a JSON object with ``from``,
+        ``to``, ``value``, ``validAfter``, ``validBefore``, ``nonce``,
+        ``signature``; numeric fields serialized as strings).
 
-        Implementation note for PR-2: build the EIP-712 typed-data using
-        `EIP712_DOMAINS[network_id]` + `EIP3009_TYPES`, sign with eth_account's
-        `encode_typed_data` / `sign_message`, base64-encode the resulting
-        signature blob the same way `client.ts:buildPaymentPayload` does.
+        :param request: The originating :class:`PaymentRequest` (``pay_to`` is
+            the EIP-3009 ``to`` recipient).
+        :param amount_base_units: USDC amount in base units (6 decimals) as a
+            decimal string; signed as the ``value`` ``uint256``.
+        :param token_contract: USDC contract address for the network (accepted
+            for parity with the TS signature; the verifying contract actually
+            used comes from the registered EIP-712 domain).
+        :param network_id: CAIP-2 network id, e.g. ``"eip155:84532"``.
+        :returns: JSON string carrying the signed EIP-3009 authorization.
+        :raises ValueError: if ``network_id`` has no registered EIP-712 domain,
+            or if no ``wallet_private_key`` is configured.
+
+        :example:
+            >>> # client configured with wallet_private_key
+            >>> payload = await client._sign_payload(req, "50000", usdc, "eip155:84532")
+            >>> json.loads(payload)["signature"].startswith("0x")
+            True
         """
-        raise NotImplementedError(
-            "Phase 2 — EIP-3009 signing port (eth_account + EIP-712 typed-data)"
+        if self._wallet_private_key is None:
+            raise ValueError("_sign_payload requires a wallet_private_key")
+
+        domain = EIP712_DOMAINS.get(network_id)
+        if domain is None:
+            raise ValueError(f"No EIP-712 domain for network: {network_id}")
+
+        # Lazy import so the SDK is importable without the optional `signing`
+        # extra installed; only `pay()` in real mode pulls eth-account in.
+        from eth_account import Account
+
+        account = Account.from_key(self._wallet_private_key)
+        signer_address = account.address
+
+        nonce = generate_eip3009_nonce()
+        now_seconds = int(time.time())
+        valid_after = 0
+        valid_before = now_seconds + 3600  # 1 hour from now
+        value = int(amount_base_units)
+
+        message = {
+            "from": signer_address,
+            "to": request.pay_to,
+            "value": value,
+            "validAfter": valid_after,
+            "validBefore": valid_before,
+            "nonce": nonce,
+        }
+
+        # eth-account 0.13.x: `sign_typed_data(private_key, domain_data,
+        # message_types, message_data)`. `.signature` is a HexBytes; `.hex()`
+        # yields 130 hex chars WITHOUT a `0x` prefix on this version, so we
+        # prefix explicitly to match viem's `0x`-prefixed 65-byte signature.
+        signed = Account.sign_typed_data(
+            self._wallet_private_key,
+            domain,
+            EIP3009_TYPES,
+            message,
+        )
+        sig_hex = signed.signature.hex()
+        signature = sig_hex if sig_hex.startswith("0x") else "0x" + sig_hex
+
+        # Wire contract MUST match client.ts:buildPaymentPayload — a JSON string
+        # with numeric fields stringified.
+        return json.dumps(
+            {
+                "from": signer_address,
+                "to": request.pay_to,
+                "value": str(value),
+                "validAfter": str(valid_after),
+                "validBefore": str(valid_before),
+                "nonce": nonce,
+                "signature": signature,
+            }
         )
 
     # ── Commission reporting ─────────────────────────────────────────────

@@ -2,11 +2,10 @@
 
 Python port of `paybot-sdk`. Mirror of the TypeScript SDK in `../../src/`.
 
-> **Status: scaffold.** Type surface, network config, HTTP transport, and all
-> non-signing client methods are complete and reviewable. EIP-3009 signing
-> (`PayBotClient.pay()` real-mode path) raises `NotImplementedError` in this PR
-> by design; the runtime port lands in the follow-up PR-2 once the type surface
-> is reviewed and merged.
+> **Status: runtime (0.1.0).** Type surface, network config, HTTP transport, all
+> client REST methods, EIP-3009 signing (`PayBotClient.pay()` real-mode path),
+> and webhook signature verification are implemented and tested. The signed
+> payload and the webhook signature are byte-for-byte compatible with the TS SDK.
 
 ## Install
 
@@ -14,7 +13,7 @@ Python port of `paybot-sdk`. Mirror of the TypeScript SDK in `../../src/`.
 pip install paybot-sdk
 ```
 
-Or with the signing extras (needed for `pay()` in real mode, once PR-2 lands):
+Or with the signing extras (required for `pay()` in real mode):
 
 ```bash
 pip install paybot-sdk[signing]
@@ -38,7 +37,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## What's in this scaffold
+## What's implemented
 
 | File | Mirror of TS | Status |
 |---|---|---|
@@ -46,27 +45,41 @@ asyncio.run(main())
 | `paybot_sdk/networks.py` | `src/networks.ts` | ✅ Full (chain IDs, USDC addresses, EIP-712 domains, EIP-3009 types) |
 | `paybot_sdk/errors.py` | `src/errors.ts` | ✅ Full (`PayBotApiError`, `get_error_message`) |
 | `paybot_sdk/crypto.py` | `src/crypto.ts` | ✅ Full (`generate_eip3009_nonce` via `secrets.token_hex`) |
-| `paybot_sdk/client.py` | `src/client.ts` | ⚠️ Partial — all REST methods complete; `_sign_payload()` raises `NotImplementedError` |
+| `paybot_sdk/client.py` | `src/client.ts` | ✅ Full — all REST methods + real-mode EIP-3009 signing in `_sign_payload()` |
+| `paybot_sdk/webhook.py` | `src/webhook.ts` | ✅ Full (`verify_webhook_signature`, HMAC-SHA256, replay guard) |
 | `paybot_sdk/__init__.py` | `src/index.ts` | ✅ Full exports |
-| `paybot_sdk/middleware.py` | `src/middleware.ts` | ❌ Not yet (lands in PR-2) |
-| `paybot_sdk/x402_handler.py` | `src/x402-handler.ts` | ❌ Not yet (lands in PR-2) |
+| `paybot_sdk/middleware.py` | `src/middleware.ts` | ❌ Not yet ported |
+| `paybot_sdk/x402_handler.py` | `src/x402-handler.ts` | ❌ Not yet ported |
 
-**Fully working in this scaffold (mock mode):**
+**Working today:**
 `register()`, `balance()`, `history()`, `set_limits()`, `health()`,
 `commission_summary()`, `commission_ledger()`, `create_api_key()`,
-`list_api_keys()`, `revoke_api_key()`. Everything that doesn't require
-EIP-3009 signing — anyone using the SDK in mock mode (no `wallet_private_key`)
-gets the same surface they'd have on the TS side.
+`list_api_keys()`, `revoke_api_key()`, real-mode `pay()` (EIP-3009 signing),
+and `verify_webhook_signature()`. Mock mode (no `wallet_private_key`) and real
+mode both mirror the TS SDK wire contract.
 
-**Pending PR-2:**
-- `_sign_payload()` runtime — EIP-712 typed-data signing with `eth-account`
-- `middleware.py` port
-- `x402_handler.py` port
-- Full integration test suite against the live facilitator (current `tests/` covers type surface, constructor validation, base-unit conversion, EIP-3009 nonce shape, and `NETWORKS` parity with TS — no live-network integration tests yet)
+**Not yet ported:**
+- `middleware.py`
+- `x402_handler.py`
 
-## Review focus for this PR
+## Webhook verification
 
-What I'd love eyes on first, since the runtime is a known follow-up:
+```python
+from paybot_sdk import verify_webhook_signature
+
+ok = verify_webhook_signature(
+    payload=request_body,                # str or bytes — the raw body
+    signature=headers["Paybot-Signature"],  # "t=<unix_ts>,v1=<hex>"
+    secret="whsec_...",
+    tolerance=300,                       # replay window in seconds
+)
+```
+
+The signing string is `f"{t}.{payload}"` and the header format is
+`t=<unix_ts>,v1=<hmac_sha256_hex>`, identical to the TS
+`verifyWebhookSignature`, so a server-signed webhook verifies in either runtime.
+
+## Notes
 
 1. **Snake-case naming.** TS uses `botId`, `walletPrivateKey`. Python convention
    is `bot_id`, `wallet_private_key`. Wire format on the HTTP boundary is still
@@ -85,16 +98,16 @@ What I'd love eyes on first, since the runtime is a known follow-up:
 
 ```bash
 cd packages/python
-pip install -e ".[test]"
+pip install -e ".[signing,test]"
 pytest
 ```
 
-The current test suite (in `tests/`) covers:
+The test suite (in `tests/`) covers:
 - Type surface (every dataclass constructable from valid inputs)
 - `PayBotClient.__init__` validation (api_key required, bot_id required, facilitator_url URL, wallet_private_key 0x-prefix)
 - `_to_base_units` corner cases (zero, no decimal, exact decimal, more decimals than scale)
 - `generate_eip3009_nonce` shape (0x-prefixed, 66 chars)
 - `NETWORKS` parity with `src/networks.ts` (chain IDs, USDC addresses)
-
-End-to-end tests against the live facilitator land in PR-2 alongside the
-signing runtime.
+- EIP-3009 signing (`test_signing.py`): TS wire shape, signer-address recovery round-trip, unsupported-network + missing-key errors, deterministic-given-nonce structure
+- Real-mode `pay()` verify→settle flow (respx-mocked HTTP)
+- Webhook verification (`test_webhook.py`): valid/tampered/expired/future/malformed-header cases + the `f"{t}.{payload}"` cross-language signing contract

@@ -6,10 +6,14 @@ Covers what the scaffold can claim:
 - Helper math (`_to_base_units`)
 - Nonce shape
 - Networks parity with `src/networks.ts`
+- Real-mode pay() signs + runs the verify→settle flow (respx-mocked HTTP)
 
-End-to-end tests against the live facilitator land in PR-2.
+Signing internals are covered in `test_signing.py`; webhook verification in
+`test_webhook.py`.
 """
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -129,23 +133,51 @@ def test_base_sepolia_present():
     assert n.is_testnet
 
 
-# ── pay() scaffold-guard returns sane error in real-mode ─────────────────
+# ── pay() real-mode now signs (no scaffold guard) ────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_pay_real_mode_returns_scaffold_error(monkeypatch):
-    """Real-mode pay() must surface the scaffold gap as a structured error,
-    not crash. PR-2 swaps `_sign_payload` for the real signing path."""
+async def test_pay_real_mode_signs_and_settles():
+    """Real-mode pay() signs EIP-3009 off-chain and runs the verify→settle
+    flow. The scaffold NOT_IMPLEMENTED guard has been removed."""
+    import respx
+    from httpx import Response
+
     client = PayBotClient(
         PayBotConfig(
             api_key="pb_test",
             bot_id="x",
+            facilitator_url="https://fac.example",
             wallet_private_key="0x" + "1" * 64,
         )
     )
-    result = await client.pay(
-        PaymentRequest(resource="https://x.example/y", amount="0.01", pay_to="0xabc")
-    )
+    with respx.mock:
+        verify = respx.post("https://fac.example/verify").mock(
+            return_value=Response(200, json={"settlementToken": "stok_1"})
+        )
+        settle = respx.post("https://fac.example/settle").mock(
+            return_value=Response(
+                200,
+                json={"success": True, "txHash": "0xdeadbeef", "network": "eip155:84532"},
+            )
+        )
+        result = await client.pay(
+            PaymentRequest(
+                resource="https://x.example/y",
+                amount="0.01",
+                pay_to="0x000000000000000000000000000000000000dEaD",
+            )
+        )
+
+    assert verify.called and settle.called
     assert isinstance(result, PaymentResult)
-    assert result.success is False
-    assert result.error_code == "NOT_IMPLEMENTED_SCAFFOLD"
+    assert result.success is True
+    assert result.tx_hash == "0xdeadbeef"
+
+    # The signed payload string posted to /verify must be valid JSON carrying a
+    # 0x-prefixed signature — proving signing ran, not the old scaffold guard.
+    sent_body = json.loads(verify.calls.last.request.content)
+    inner = json.loads(sent_body["payload"]["payload"])
+    assert inner["signature"].startswith("0x")
+    assert inner["to"] == "0x000000000000000000000000000000000000dEaD"
+    await client.close()

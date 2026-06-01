@@ -1,12 +1,14 @@
 """paybot-sdk Python port — entry module.
 
-Mirrors the TS `src/index.ts` exports. Once the runtime port lands (PR-2),
-the `x402_handler` factory will be re-exported from here too.
+Mirrors the TS `src/index.ts` exports. The runtime is shipped: EIP-3009 signing
+in `PayBotClient.pay()` (via the `signing` extra) and `verify_webhook_signature`
+are both available.
 """
 from .client import PayBotClient
 from .errors import PayBotApiError, get_error_message
 from .networks import EIP712_DOMAINS, EIP3009_TYPES, NETWORKS, NetworkConfig
 from .receipts import canonicalize, receipt_signing_payload, sign_receipt, verify_receipt
+from .webhook import verify_webhook_signature
 from .types import (
     ApiKeyListItem,
     ApiKeyResult,
@@ -36,10 +38,11 @@ from .types import (
     UnsignedReceipt,
 )
 
-__version__ = "0.1.0a1"  # scaffold release; runtime in 0.1.0
+__version__ = "0.1.0"  # runtime release: EIP-3009 signing + webhook verification
 
 __all__ = [
     "PayBotClient",
+    "verify_webhook_signature",
     "PayBotApiError",
     "get_error_message",
     "canonicalize",
