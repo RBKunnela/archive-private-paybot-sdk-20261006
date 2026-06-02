@@ -6,7 +6,7 @@ USDC payments for bots via the [x402 protocol](https://www.x402.org/). One depen
 
 - **One dependency** (`viem`), 7 files, fully typed
 - **Simple API** — register your bot and make payments in 2 lines of code
-- **Network support** — Base and Base Sepolia (EIP155)
+- **Network support** — Base, Optimism, Arbitrum One, Polygon PoS mainnets + Base Sepolia testnet (EIP155)
 - **Mock mode** for testing without real transactions
 - **MCP integration** — works with AI agent frameworks via [`paybot-mcp`](https://github.com/RBKunnela/paybot-mcp)
 - **Self-hostable** facilitator service
@@ -103,6 +103,73 @@ PayBot enforces progressive trust levels that govern what your bot can do:
 | `client.setLimits(limits)` | Update spending limits |
 | `client.health()` | Check facilitator health |
 
+## CLI
+
+The package ships a `paybot` command — a thin wrapper over `PayBotClient`. No
+install needed beyond `npx`:
+
+```bash
+npx paybot --help
+```
+
+(Or install globally / as a dependency: `npm i -g paybot-sdk` then `paybot ...`.)
+
+### Configuration
+
+Every command resolves config with precedence **flags > environment > error**:
+
+| Setting | Flag | Environment variable |
+|---------|------|----------------------|
+| API key | `--api-key <key>` | `PAYBOT_API_KEY` |
+| Bot id | `--bot-id <id>` | `PAYBOT_BOT_ID` |
+| Wallet key (for real payments) | _(env only)_ | `WALLET_PRIVATE_KEY` |
+| Facilitator URL | `--facilitator-url <url>` | `PAYBOT_FACILITATOR_URL` |
+
+Secrets (API keys, wallet keys) are **never printed in full** — any echoed value
+is masked as `prefix…suffix`.
+
+```bash
+export PAYBOT_API_KEY="pb_test_..."
+export PAYBOT_BOT_ID="my-bot"
+```
+
+### Commands
+
+```bash
+# Register this bot (optional initial trust level 0-5)
+paybot register --bot-id my-bot --trust-level 2
+
+# Show trust status + remaining budget
+paybot balance
+
+# Pay for a resource (amount is human-readable, e.g. 0.05)
+paybot pay \
+  --resource https://api.example.com/data \
+  --amount 0.05 \
+  --pay-to 0xRecipient... \
+  --token USDC \
+  --idempotency-key order-123
+
+# Check facilitator health
+paybot health
+
+# List supported networks (CAIP-2 + name)
+paybot networks
+
+# List supported tokens with MiCA flags (optionally for one network)
+paybot tokens
+paybot tokens --network eip155:10
+```
+
+| Command | Wraps |
+|---------|-------|
+| `paybot register [--trust-level <n>]` | `client.register()` |
+| `paybot balance` | `client.balance()` |
+| `paybot pay --resource <url> --amount <human> --pay-to <0x> [--token <SYM>] [--network <caip2>] [--idempotency-key <k>]` | `client.pay()` |
+| `paybot health` | `client.health()` |
+| `paybot networks` | `getSupportedNetworks()` |
+| `paybot tokens [--network <caip2>]` | `getSupportedTokens()` |
+
 ## Error Handling
 
 Non-`pay()` methods throw `PayBotApiError` on failure:
@@ -138,12 +205,25 @@ if (!result.success) {
 import { NETWORKS, getNetwork, getSupportedNetworks } from 'paybot-sdk';
 
 // Available networks
-console.log(getSupportedNetworks()); // ['eip155:8453', 'eip155:84532']
+console.log(getSupportedNetworks());
+// ['eip155:8453', 'eip155:84532', 'eip155:10', 'eip155:42161', 'eip155:137']
 
 // Get network details
 const baseSepolia = getNetwork('eip155:84532');
 console.log(baseSepolia?.name); // 'Base Sepolia'
 ```
+
+### Networks supported
+
+| Network | CAIP-2 | Chain ID | Type |
+|---|---|---|---|
+| Base Mainnet | `eip155:8453` | 8453 | mainnet |
+| Base Sepolia | `eip155:84532` | 84532 | testnet |
+| Optimism | `eip155:10` | 10 | mainnet |
+| Arbitrum One | `eip155:42161` | 42161 | mainnet |
+| Polygon PoS | `eip155:137` | 137 | mainnet |
+
+RPC URLs default to public endpoints (`mainnet.optimism.io`, `arb1.arbitrum.io/rpc`, `polygon-rpc.com`, …); override per network for production use.
 
 ## Webhook Signature Verification
 
@@ -198,15 +278,18 @@ isSupportedCaip2('eip155:8453');  // true
 // X402Handler.validateUptoCapture(authorizedMax, captured) throws UPTO_OVERCHARGE if exceeded.
 ```
 
-## Tokens (USDC + EURC)
+## Tokens (USDC + EURC + DAI)
 
-Pay in USDC (default) or EURC — both MiCA-authorized and EIP-3009-capable on Base + Base Sepolia. The signing domain is resolved per-token, so EURC signs against its own contract.
+Pay in USDC (default), EURC, or DAI. The signing domain is resolved per-token, so each
+token signs against its own contract. USDC defaults everywhere; the public surface is
+unchanged for existing USDC callers.
 
 ```typescript
 import { TOKENS, getToken, getSupportedTokens } from 'paybot-sdk';
 
-getSupportedTokens();          // ['USDC', 'EURC']
+getSupportedTokens();            // ['USDC', 'EURC', 'DAI']
 getToken('EURC')?.micaCompliant; // true
+getToken('DAI')?.micaCompliant;  // false (crypto-collateralized, not an EU EMT)
 
 await client.pay({
   resource: 'https://api.example.com/data',
@@ -217,7 +300,24 @@ await client.pay({
 });
 ```
 
-> EURC addresses ship from Circle's official deployment list — verify against [circle.com/multi-chain-usdc](https://www.circle.com/multi-chain-usdc) before mainnet use.
+### Token coverage
+
+Only `(token, network)` pairs verifiable against an **official issuer source** are
+shipped. A wrong contract address routes real funds to the wrong contract, so
+unverifiable pairs are deliberately omitted rather than guessed.
+
+| Token | Decimals | MiCA | Base | Base Sepolia | Optimism | Arbitrum | Polygon | Issuer source |
+|---|---|---|---|---|---|---|---|---|
+| USDC | 6 | yes | ✓ | ✓ | ✓ | ✓ | ✓ | [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses) |
+| EURC | 6 | yes | ✓ | ✓ | — | — | — | [Circle EURC addresses](https://developers.circle.com/stablecoins/eurc-contract-addresses) |
+| DAI | 18 | no | — | — | ✓ | ✓ | ✓ | [MakerDAO / Sky](https://docs.makerdao.com/) |
+
+**Not currently supported:** PYUSD (Paxos — Ethereum + Solana only) and RLUSD (Ripple —
+Ethereum + XRPL only) are not deployed on any network in this registry, so they are not
+registered.
+
+> Token contract addresses ship with their official issuer source cited inline in
+> `src/networks.ts`. Re-verify each address against the cited source before mainnet use.
 
 ## Error Taxonomy
 
