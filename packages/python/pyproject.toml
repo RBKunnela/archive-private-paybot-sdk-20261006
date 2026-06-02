@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "paybot-sdk"
-version = "0.1.0"
-description = "Python port of paybot-sdk — USDC payments for AI agents via the x402 protocol."
+version = "0.2.0"
+description = "Python port of paybot-sdk — USDC/EURC payments for AI agents via the x402 protocol."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -37,6 +37,21 @@ signing = [
 mcp = [
     # Will be required by the MCP integration mirror of paybot-mcp; not used yet.
     "mcp>=1.27.1,<2.0",
+]
+web = [
+    # Required for the FastAPI dependency variant of the x402 payment-wall
+    # middleware (paybot_402_dependency). The raw-ASGI Paybot402Middleware needs
+    # no third-party import. FastAPI is lazy-imported, so it is NOT a hard dep.
+    "fastapi>=0.110",
+]
+dev = [
+    # Convenience aggregate: signing + web + test in one extra for contributors.
+    "eth-account>=0.13,<1.0",
+    "eth-typing>=6.0.0,<7",
+    "fastapi>=0.110",
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
 ]
 test = [
     "pytest>=8",

@@ -7,12 +7,19 @@ SDKs without retyping. Where TS uses string literals for union types (e.g.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+
+if TYPE_CHECKING:
+    from .telemetry import TelemetryConfig
 
 
 CommissionStatus = Literal["pending", "forwarded", "deferred"]
 TrustLevel = Literal[0, 1, 2, 3, 4, 5]
 ReceiptSignerRole = Literal["facilitator", "payer"]
+
+# x402 v2 protocol enums (mirrors types.ts:126, 151).
+PaymentProtocol = Literal["x402", "mpp", "dual"]
+PaymentScheme = Literal["exact", "max", "range", "upto"]
 
 
 @dataclass
@@ -26,6 +33,9 @@ class PayBotConfig:
     wallet_private_key: Optional[str] = None  # hex with 0x prefix
     max_retries: int = 1
     timeout_ms: int = 30_000
+    # Optional, opt-in OpenTelemetry tracing. When omitted, telemetry is a
+    # complete no-op with zero overhead (types.ts:28).
+    telemetry: Optional["TelemetryConfig"] = None
 
 
 @dataclass
@@ -35,6 +45,12 @@ class PaymentRequest:
     pay_to: str
     token_contract: Optional[str] = None
     network: Optional[str] = None  # CAIP-2 id, default eip155:84532
+    # Token ticker symbol to pay with (e.g. "USDC", "EURC"). Default "USDC".
+    # Unknown symbol -> PaymentResult success:false code UNSUPPORTED_TOKEN (types.ts:48).
+    token: Optional[str] = None
+    # Optional idempotency key. When set, pay() sends X-Idempotency-Key and
+    # caches the successful result per PayBotClient instance (types.ts:57).
+    idempotency_key: Optional[str] = None
 
 
 @dataclass
@@ -238,3 +254,110 @@ class CommissionEntry:
     status: CommissionStatus
     created_at: str
     forwarded_at: Optional[str] = None
+
+
+# ===== x402 v2 Protocol Types (mirrors types.ts:117-286) =====
+
+
+@dataclass
+class PaymentRequirements:
+    """Payment requirements negotiated between agent and merchant (types.ts:156-179)."""
+
+    scheme: PaymentScheme
+    network: str  # CAIP-2 identifier (e.g. eip155:8453)
+    asset: str  # asset identifier (e.g. eip155:8453/erc20:0x...)
+    amount: str  # base units
+    pay_to: str
+    max_timeout_seconds: int
+    min_amount: Optional[str] = None  # for range scheme
+    max_amount: Optional[str] = None  # for range / upto scheme
+    token: Optional[str] = None  # token ticker; selects EIP-712 domain (default USDC)
+
+
+@dataclass
+class MerchantInfo:
+    """Merchant information for transparency (types.ts:184)."""
+
+    name: str
+    url: str
+    domain: Optional[str] = None
+
+
+@dataclass
+class PaymentMetadata:
+    """Payment metadata (types.ts:196)."""
+
+    description: Optional[str] = None
+    order_id: Optional[str] = None
+    custom: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class PaymentIntent:
+    """x402 v2 core payment negotiation structure (types.ts:122-139)."""
+
+    intent_id: str
+    protocol: PaymentProtocol  # x402 (native), mpp (Stripe/Tempo), dual (both)
+    requirements: PaymentRequirements
+    version: str
+    created_at: str
+    expires_at: str
+    merchant: Optional[MerchantInfo] = None
+    meta: Optional[PaymentMetadata] = None
+
+
+@dataclass
+class PaymentPayload:
+    """Payment payload from an HTTP 402 response (types.ts:208)."""
+
+    payment_intent: PaymentIntent
+    requirements: PaymentRequirements
+    merchant: Optional[MerchantInfo] = None
+    meta: Optional[PaymentMetadata] = None
+
+
+@dataclass
+class PaymentRequiredResponse:
+    """HTTP 402 Payment Required response (types.ts:222)."""
+
+    status: int  # always 402
+    headers: Dict[str, str]
+    body: Any
+
+
+@dataclass
+class SignedPayment:
+    """Signed payment ready for submission (types.ts:234)."""
+
+    protocol: PaymentProtocol
+    signed_data: Dict[str, Any]
+    signature: str
+    timestamp: int  # epoch ms (matches TS Date.now())
+
+
+@dataclass
+class Receipt:
+    """Payment receipt after successful settlement (types.ts:248).
+
+    ``confirmed_at`` is kept as an ISO-8601 string (NOT a ``datetime``); see the
+    PARITY-SPEC divergence note — Python returns the ISO string to avoid lossy
+    round-trips while TS hands back a ``Date``.
+    """
+
+    receipt_id: str
+    status: Literal["pending", "confirmed", "failed"]
+    amount: str
+    network: str
+    transaction_id: Optional[str] = None
+    confirmed_at: Optional[str] = None  # ISO-8601 string
+    block_number: Optional[int] = None
+    gas_used: Optional[str] = None
+
+
+@dataclass
+class PaymentResponseConfirmation:
+    """Parsed settlement confirmation from a PAYMENT-RESPONSE header (types.ts:279)."""
+
+    receipt_id: str
+    status: Literal["pending", "confirmed", "failed"]
+    transaction_id: Optional[str] = None
