@@ -1,0 +1,13 @@
+# fastapi-bot example dependencies.
+#
+# The Python PayBot SDK lives in this repo at packages/python. Installed here in
+# editable mode with the [web] extra (FastAPI) and [signing] extra (real-mode
+# EIP-3009 signing). Run from this folder:
+#   pip install -r requirements.txt
+-e ../../packages/python[web,signing]
+
+# ASGI server to run the app.
+uvicorn[standard]>=0.30
+
+# Loads .env into the process environment.
+python-dotenv>=1.0

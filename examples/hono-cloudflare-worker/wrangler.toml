@@ -1,0 +1,20 @@
+# wrangler.toml — Cloudflare Worker config for the Hono x402 example.
+# This is a stub: fill in your own account_id and run `wrangler deploy`.
+
+name = "paybot-hono-x402"
+main = "src/index.ts"
+compatibility_date = "2024-09-25"
+
+# Your Cloudflare account id (or set CLOUDFLARE_ACCOUNT_ID in the env).
+# account_id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# Secrets are NOT stored here. Set them out-of-band:
+#   wrangler secret put PAYBOT_PAY_TO
+#   wrangler secret put PAYBOT_FACILITATOR_URL   # optional, for self-hosting
+#
+# For local `wrangler dev`, put non-secret defaults in .dev.vars (gitignored):
+#   PAYBOT_PAY_TO=0x...
+#   PAYBOT_FACILITATOR_URL=http://localhost:8787
+
+[observability]
+enabled = true
