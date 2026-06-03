@@ -19,6 +19,7 @@ from paybot_sdk import (
     get_token_address,
     is_supported_caip2,
     parse_caip2,
+    resolve_token_address,
 )
 from paybot_sdk.errors import PayBotApiError
 from paybot_sdk.networks import (
@@ -26,6 +27,15 @@ from paybot_sdk.networks import (
     get_network,
     get_supported_networks,
 )
+
+# EURC Base Sepolia testnet deployment — the ONLY EURC address shipped in the
+# public open-core registry. The EURC mainnet address is operator-private and
+# intentionally absent from paybot_sdk/ (resolved at runtime via
+# token_address_overrides).
+EURC_BASE_SEPOLIA = "0x808456652fdb597867f38412077A9182bf77359F"
+# Stand-in for the operator-injected EURC mainnet address. The literal Circle EURC
+# mainnet address must NEVER appear in this public repo.
+EURC_MAINNET_OVERRIDE = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01"
 
 
 # ── TOKENS registry ────────────────────────────────────────────────────────
@@ -51,19 +61,23 @@ def test_usdc_addresses_match_networks_ts():
     assert usdc.address_by_network["eip155:137"] == "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
     assert usdc.decimals == 6
     assert usdc.eip712_name == "USDC"
-    assert usdc.mica_compliant
+    # Premium EU-compliance metadata must NOT exist on the public token config.
+    assert not hasattr(usdc, "mica_compliant")
 
 
 def test_eurc_addresses_match_networks_ts():
     eurc = TOKENS["EURC"]
-    assert eurc.address_by_network["eip155:8453"] == "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"
-    assert eurc.address_by_network["eip155:84532"] == "0x808456652fdb597867f38412077A9182bf77359F"
+    # Public registry carries ONLY the Base Sepolia testnet deployment.
+    assert eurc.address_by_network["eip155:84532"] == EURC_BASE_SEPOLIA
+    # EURC mainnet is operator-private (premium) — intentionally absent.
+    assert "eip155:8453" not in eurc.address_by_network
     # EURC is NOT deployed on the new L2s.
     assert "eip155:10" not in eurc.address_by_network
     assert "eip155:42161" not in eurc.address_by_network
     assert "eip155:137" not in eurc.address_by_network
     assert eurc.decimals == 6
     assert eurc.eip712_name == "EURC"
+    assert not hasattr(eurc, "mica_compliant")
 
 
 def test_dai_addresses_match_networks_ts():
@@ -76,8 +90,8 @@ def test_dai_addresses_match_networks_ts():
     assert "eip155:84532" not in dai.address_by_network
     assert dai.decimals == 18
     assert dai.eip712_name == "Dai Stablecoin"
-    # Crypto-collateralized — not an EU EMT.
-    assert dai.mica_compliant is False
+    # Premium EU-compliance metadata must NOT exist on the public token config.
+    assert not hasattr(dai, "mica_compliant")
 
 
 # ── get_token ──────────────────────────────────────────────────────────────
@@ -101,7 +115,12 @@ def test_get_token_case_sensitive():
 
 
 def test_get_token_address_known():
-    assert get_token_address("EURC", "eip155:8453") == "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"
+    assert get_token_address("EURC", "eip155:84532") == EURC_BASE_SEPOLIA
+
+
+def test_get_token_address_eurc_mainnet_not_in_public_registry():
+    # EURC mainnet is operator-private (premium) and intentionally absent.
+    assert get_token_address("EURC", "eip155:8453") is None
 
 
 @pytest.mark.parametrize(
@@ -148,6 +167,40 @@ def test_get_token_address_token_not_on_network():
     assert get_token_address("USDC", "eip155:1") is None
 
 
+# ── resolve_token_address (operator override layer) ────────────────────────
+
+
+def test_resolve_token_address_falls_back_to_public_registry():
+    assert (
+        resolve_token_address("USDC", "eip155:8453")
+        == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    )
+    assert resolve_token_address("EURC", "eip155:84532") == EURC_BASE_SEPOLIA
+
+
+def test_resolve_token_address_eurc_mainnet_none_without_override():
+    assert resolve_token_address("EURC", "eip155:8453") is None
+
+
+def test_resolve_token_address_injected_eurc_mainnet():
+    overrides = {"EURC": {"eip155:8453": EURC_MAINNET_OVERRIDE}}
+    assert resolve_token_address("EURC", "eip155:8453", overrides) == EURC_MAINNET_OVERRIDE
+
+
+def test_resolve_token_address_override_precedence():
+    overrides = {"USDC": {"eip155:8453": EURC_MAINNET_OVERRIDE}}
+    assert resolve_token_address("USDC", "eip155:8453", overrides) == EURC_MAINNET_OVERRIDE
+
+
+def test_resolve_token_address_unrelated_overrides_do_not_leak():
+    overrides = {"EURC": {"eip155:8453": EURC_MAINNET_OVERRIDE}}
+    assert (
+        resolve_token_address("USDC", "eip155:8453", overrides)
+        == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    )
+    assert resolve_token_address("EURC", "eip155:84532", overrides) == EURC_BASE_SEPOLIA
+
+
 # ── get_supported_tokens ───────────────────────────────────────────────────
 
 
@@ -171,13 +224,28 @@ def test_get_eip712_domain_usdc_default_symbol():
     assert get_eip712_domain("eip155:8453") == EIP712_DOMAINS["eip155:8453"]
 
 
-def test_get_eip712_domain_eurc_uses_own_domain():
-    d = get_eip712_domain("eip155:8453", "EURC")
+def test_get_eip712_domain_eurc_uses_own_domain_testnet():
+    d = get_eip712_domain("eip155:84532", "EURC")
+    assert d == {
+        "name": "EURC",
+        "version": "2",
+        "chainId": 84532,
+        "verifyingContract": EURC_BASE_SEPOLIA,
+    }
+
+
+def test_get_eip712_domain_eurc_mainnet_none_without_override():
+    # No public-registry mainnet address → no domain unless the operator injects one.
+    assert get_eip712_domain("eip155:8453", "EURC") is None
+
+
+def test_get_eip712_domain_eurc_mainnet_from_injected_override():
+    d = get_eip712_domain("eip155:8453", "EURC", EURC_MAINNET_OVERRIDE)
     assert d == {
         "name": "EURC",
         "version": "2",
         "chainId": 8453,
-        "verifyingContract": "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42",
+        "verifyingContract": EURC_MAINNET_OVERRIDE,
     }
 
 

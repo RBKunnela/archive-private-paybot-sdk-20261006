@@ -153,7 +153,7 @@ export function buildProgram(): Command {
 
   program
     .command('tokens')
-    .description('List supported tokens (with MiCA flags)')
+    .description('List supported tokens (optionally for one network)')
     .option('--network <caip2>', 'Filter to tokens deployed on this network')
     .action((opts: { network?: string }) => {
       // eslint-disable-next-line no-console

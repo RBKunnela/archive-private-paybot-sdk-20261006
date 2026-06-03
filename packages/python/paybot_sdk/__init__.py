@@ -61,6 +61,7 @@ from .networks import (
     get_token_address,
     is_supported_caip2,
     parse_caip2,
+    resolve_token_address,
 )
 from .receipts import canonicalize, receipt_signing_payload, sign_receipt, verify_receipt
 from .telemetry import (
@@ -143,6 +144,7 @@ __all__ = [
     "Caip2",
     "get_token",
     "get_token_address",
+    "resolve_token_address",
     "get_supported_tokens",
     "get_eip712_domain",
     "get_network",

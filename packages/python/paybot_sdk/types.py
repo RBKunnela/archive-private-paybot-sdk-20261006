@@ -33,6 +33,17 @@ class PayBotConfig:
     wallet_private_key: Optional[str] = None  # hex with 0x prefix
     max_retries: int = 1
     timeout_ms: int = 30_000
+    # Optional operator-supplied token contract addresses, keyed
+    # ``token_symbol -> caip2_network -> address`` (e.g.
+    # ``{"EURC": {"eip155:8453": "0x..."}}``). The public open-core registry
+    # (``TOKENS``) ships only addresses that are safe to distribute (e.g. testnet
+    # deployments). Mainnet addresses for regulated tokens are NOT hardcoded in the
+    # public SDK — the operator injects them here at runtime. During payment the
+    # SDK resolves a token address as: explicit ``PaymentRequest.token_contract`` ->
+    # this override map -> the public registry -> otherwise a
+    # ``TOKEN_ADDRESS_NOT_CONFIGURED`` failure. Mirrors
+    # ``PayBotConfig.tokenAddressOverrides`` in ``src/types.ts``.
+    token_address_overrides: Optional[Dict[str, Dict[str, str]]] = None
     # Optional, opt-in OpenTelemetry tracing. When omitted, telemetry is a
     # complete no-op with zero overhead (types.ts:28).
     telemetry: Optional["TelemetryConfig"] = None

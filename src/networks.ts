@@ -114,9 +114,13 @@ export interface TokenConfig {
    * deployed Circle contract's domain name), distinct from the display name.
    */
   readonly eip712Name?: string;
-  /** Whether the token is MiCA-compliant (EU Markets in Crypto-Assets). */
-  readonly micaCompliant: boolean;
-  /** Map of CAIP-2 network id → the token's ERC-20 contract address on that network. */
+  /**
+   * Map of CAIP-2 network id → the token's ERC-20 contract address on that
+   * network. This public registry intentionally carries only the addresses that
+   * are safe to ship open-core (e.g. testnet deployments). Mainnet addresses for
+   * regulated tokens are resolved at runtime from the operator layer via
+   * {@link PayBotConfig.tokenAddressOverrides} — never hardcoded here.
+   */
   readonly addressByNetwork: Record<string, string>;
 }
 
@@ -128,14 +132,20 @@ export interface TokenConfig {
  * real funds to the wrong contract, so only pairs verifiable from an official
  * issuer source are listed; unverifiable pairs are deliberately omitted.
  *
+ * This public open-core registry intentionally carries only addresses that are
+ * safe to distribute (testnet deployments, plus mainnet addresses of tokens that
+ * are not operator-private). Mainnet addresses for regulated tokens (e.g. EURC
+ * mainnet) are NOT hardcoded here — they are injected at runtime via
+ * {@link PayBotConfig.tokenAddressOverrides} and resolved through
+ * {@link resolveTokenAddress}.
+ *
  * Coverage notes (as of the T2.1/T2.2 expansion):
  *   - USDC: native (Circle) on Base, Base Sepolia, Optimism, Arbitrum One, Polygon.
- *   - EURC: Circle deploys native EURC on Base/Base Sepolia (and Ethereum, Solana,
- *     Avalanche) but NOT on Optimism / Arbitrum / Polygon — so EURC is omitted
- *     on those three L2s.
+ *   - EURC: public registry carries ONLY the Base Sepolia testnet deployment.
+ *     The EURC mainnet address is operator-private (injected via overrides).
  *   - DAI: MakerDAO/Sky canonical deployments on Optimism, Arbitrum One, Polygon
- *     (and Base). DAI is crypto-collateralized, NOT an authorized EU EMT →
- *     `micaCompliant: false`.
+ *     (and Base). DAI is crypto-collateralized, not a regulated EU EMT, so it is
+ *     public-safe to ship in the open-core registry.
  *   - PYUSD (Paxos) and RLUSD (Ripple) are NOT deployed on any network currently
  *     in this registry (PYUSD: Ethereum + Solana; RLUSD: Ethereum + XRPL), so they
  *     are intentionally absent rather than added with empty/guessed addresses.
@@ -147,7 +157,6 @@ export const TOKENS: Record<string, TokenConfig> = {
     name: 'USD Coin',
     // USDC contracts sign their EIP-712 domain as the literal "USDC".
     eip712Name: 'USDC',
-    micaCompliant: true,
     addressByNetwork: {
       // Reuses NETWORKS[...].usdcAddress — keep identical, do not diverge.
       // All native USDC (Circle).
@@ -164,12 +173,11 @@ export const TOKENS: Record<string, TokenConfig> = {
     decimals: 6,
     name: 'EURC',
     eip712Name: 'EURC',
-    micaCompliant: true,
     addressByNetwork: {
-      // Circle native EURC. Only deployed on Base + Base Sepolia among the
-      // networks in this registry — NOT on Optimism/Arbitrum/Polygon.
-      // Source: https://developers.circle.com/stablecoins/eurc-contract-addresses
-      'eip155:8453': '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42',
+      // Public open-core registry carries ONLY the Base Sepolia testnet
+      // deployment. The EURC mainnet address is operator-private and must be
+      // injected at runtime via PayBotConfig.tokenAddressOverrides — it is
+      // deliberately NOT hardcoded here.
       'eip155:84532': '0x808456652fdb597867f38412077A9182bf77359F',
     },
   },
@@ -179,8 +187,6 @@ export const TOKENS: Record<string, TokenConfig> = {
     name: 'Dai Stablecoin',
     // DAI contracts sign their EIP-712 domain as the literal "Dai Stablecoin".
     eip712Name: 'Dai Stablecoin',
-    // DAI is crypto-collateralized (MakerDAO/Sky), not an EU-authorized EMT.
-    micaCompliant: false,
     addressByNetwork: {
       // MakerDAO/Sky canonical DAI deployments (bridged).
       // Source: https://docs.makerdao.com/ + chain-native bridge deployments.
@@ -215,12 +221,49 @@ export function getToken(symbol: string): TokenConfig | undefined {
  *          unknown OR the token is not deployed on that network.
  *
  * @example
- *   getTokenAddress('EURC', 'eip155:8453'); // '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42'
- *   getTokenAddress('USDC', 'eip155:1');    // undefined (not deployed here)
- *   getTokenAddress('DOGE', 'eip155:8453'); // undefined (unknown token)
+ *   getTokenAddress('EURC', 'eip155:84532'); // '0x...' (testnet deployment)
+ *   getTokenAddress('USDC', 'eip155:1');     // undefined (not deployed here)
+ *   getTokenAddress('DOGE', 'eip155:8453');  // undefined (unknown token)
  */
 export function getTokenAddress(symbol: string, network: string): string | undefined {
   return TOKENS[symbol]?.addressByNetwork[network];
+}
+
+/**
+ * Resolve a token's contract address with an optional operator override layer.
+ *
+ * Resolution precedence (first match wins):
+ *   1. `overrides[symbol][network]` — operator-injected address (e.g. a mainnet
+ *      deployment intentionally kept out of the public registry).
+ *   2. The public {@link TOKENS} registry ({@link getTokenAddress}).
+ *
+ * Use this instead of {@link getTokenAddress} when an operator may supply
+ * addresses at runtime via {@link PayBotConfig.tokenAddressOverrides}. The
+ * helper is deliberately generic — it carries no token-specific or regulatory
+ * data, only the symbol→network→address lookup.
+ *
+ * @param symbol - The token ticker (e.g. `'USDC'`, `'EURC'`).
+ * @param network - The CAIP-2 network id (e.g. `'eip155:8453'`).
+ * @param overrides - Optional operator-supplied `symbol → network → address` map.
+ * @returns The resolved contract address, or `undefined` when neither the
+ *          override map nor the public registry has an entry.
+ *
+ * @example
+ *   resolveTokenAddress('EURC', 'eip155:8453');                 // undefined (not public)
+ *   resolveTokenAddress('EURC', 'eip155:8453', {
+ *     EURC: { 'eip155:8453': '0x...' },
+ *   });                                                          // '0x...' (operator-injected)
+ */
+export function resolveTokenAddress(
+  symbol: string,
+  network: string,
+  overrides?: Record<string, Record<string, string>>,
+): string | undefined {
+  const override = overrides?.[symbol]?.[network];
+  if (override) {
+    return override;
+  }
+  return getTokenAddress(symbol, network);
 }
 
 /**
@@ -250,25 +293,32 @@ export function getSupportedTokens(): string[] {
  *
  * @param network - The CAIP-2 network id (e.g. `'eip155:8453'`).
  * @param symbol - The token ticker (default `'USDC'`).
- * @returns The EIP-712 domain, or `undefined` when the token is unknown OR the
- *          token has no address / no network entry for `network`.
+ * @param verifyingContractOverride - Optional contract address to sign against,
+ *   used when the address is supplied at runtime by the operator layer (i.e. the
+ *   token has no public-registry entry for `network`, such as EURC mainnet).
+ *   When omitted, the address is taken from the public {@link TOKENS} registry.
+ * @returns The EIP-712 domain, or `undefined` when the token is unknown, the
+ *          network is unsupported, OR no contract address can be resolved
+ *          (neither an override nor a public-registry entry).
  *
  * @example
  *   getEip712Domain('eip155:8453', 'USDC');
  *   // { name: 'USDC', version: '2', chainId: 8453, verifyingContract: '0x8335...' }
- *   getEip712Domain('eip155:8453', 'EURC');
- *   // { name: 'EURC', version: '2', chainId: 8453, verifyingContract: '0x60a3...' }
- *   getEip712Domain('eip155:8453', 'DOGE'); // undefined
+ *   getEip712Domain('eip155:84532', 'EURC');
+ *   // { name: 'EURC', version: '2', chainId: 84532, verifyingContract: '0x...' }
+ *   getEip712Domain('eip155:8453', 'EURC', '0x...'); // operator-injected mainnet address
+ *   getEip712Domain('eip155:8453', 'DOGE');          // undefined
  */
 export function getEip712Domain(
   network: string,
   symbol = 'USDC',
+  verifyingContractOverride?: string,
 ): { name: string; version: string; chainId: number; verifyingContract: `0x${string}` } | undefined {
   const token = TOKENS[symbol];
   if (!token) {
     return undefined;
   }
-  const verifyingContract = token.addressByNetwork[network];
+  const verifyingContract = verifyingContractOverride ?? token.addressByNetwork[network];
   const networkConfig = NETWORKS[network];
   if (!verifyingContract || !networkConfig) {
     return undefined;

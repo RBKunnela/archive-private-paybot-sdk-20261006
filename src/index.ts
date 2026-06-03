@@ -79,6 +79,7 @@ export {
   TOKENS,
   getToken,
   getTokenAddress,
+  resolveTokenAddress,
   getSupportedTokens,
   getEip712Domain,
 } from './networks.js';

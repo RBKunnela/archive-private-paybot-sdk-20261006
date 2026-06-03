@@ -68,9 +68,61 @@ async def test_pay_unknown_token_returns_unsupported_token():
     await client.close()
 
 
-async def test_pay_real_mode_eurc_signs_under_own_domain():
-    """EURC real-mode pay() resolves the EURC domain and runs verify→settle."""
+# EURC Base Sepolia testnet deployment — the only EURC address in the public
+# open-core registry. The EURC mainnet address is operator-private; a stand-in is
+# injected via token_address_overrides below.
+EURC_BASE_SEPOLIA = "0x808456652fdb597867f38412077A9182bf77359F"
+EURC_MAINNET_OVERRIDE = "0xAbCdEf0123456789AbCdEf0123456789AbCdEf01"
+
+
+async def test_pay_real_mode_eurc_testnet_signs_under_own_domain():
+    """EURC real-mode pay() on testnet resolves the EURC domain and runs verify→settle."""
     client = _client(wallet_private_key=PK)
+    with respx.mock:
+        verify = respx.post("https://fac.example/verify").mock(
+            return_value=Response(200, json={"settlementToken": "stok"})
+        )
+        respx.post("https://fac.example/settle").mock(
+            return_value=Response(200, json={"success": True, "txHash": "0xtx"})
+        )
+        result = await client.pay(
+            PaymentRequest(
+                resource="r", amount="0.01",
+                pay_to="0x000000000000000000000000000000000000dEaD",
+                token="EURC", network="eip155:84532",
+            )
+        )
+    assert result.success is True
+    # Asset must reference the EURC testnet contract, not USDC.
+    body = json.loads(verify.calls.last.request.content)
+    assert EURC_BASE_SEPOLIA in body["requirements"]["asset"]
+    await client.close()
+
+
+async def test_pay_eurc_mainnet_not_configured_fails_loudly():
+    """EURC mainnet is operator-private and absent from the public registry. Without
+    an override, pay() must fail with TOKEN_ADDRESS_NOT_CONFIGURED, not sign a wrong
+    address."""
+    client = _client()
+    result = await client.pay(
+        PaymentRequest(
+            resource="r", amount="0.01", pay_to="0xabc",
+            token="EURC", network="eip155:8453",
+        )
+    )
+    assert result.success is False
+    assert result.error_code == "TOKEN_ADDRESS_NOT_CONFIGURED"
+    assert "token_address_overrides" in result.error
+    await client.close()
+
+
+async def test_pay_real_mode_eurc_mainnet_via_override_signs_correctly():
+    """An operator-injected EURC mainnet address (via token_address_overrides) lets
+    pay() resolve + sign against the mainnet contract."""
+    client = _client(
+        wallet_private_key=PK,
+        token_address_overrides={"EURC": {"eip155:8453": EURC_MAINNET_OVERRIDE}},
+    )
     with respx.mock:
         verify = respx.post("https://fac.example/verify").mock(
             return_value=Response(200, json={"settlementToken": "stok"})
@@ -86,9 +138,8 @@ async def test_pay_real_mode_eurc_signs_under_own_domain():
             )
         )
     assert result.success is True
-    # Asset must reference the EURC contract, not USDC.
     body = json.loads(verify.calls.last.request.content)
-    assert "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42" in body["requirements"]["asset"]
+    assert EURC_MAINNET_OVERRIDE in body["requirements"]["asset"]
     await client.close()
 
 

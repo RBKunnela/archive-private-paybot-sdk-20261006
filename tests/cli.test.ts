@@ -117,13 +117,13 @@ describe('cli/formatNetworks', () => {
 });
 
 describe('cli/formatTokens', () => {
-  it('[UNIT] formatTokens — should list all tokens with MiCA flags when no network filter (happy path)', () => {
+  it('[UNIT] formatTokens — should list all tokens with decimals when no network filter (happy path)', () => {
     const out = formatTokens();
     expect(out).toContain('USDC');
     expect(out).toContain('EURC');
     expect(out).toContain('DAI');
-    expect(out).toMatch(/USDC\s+MiCA: yes/);
-    expect(out).toMatch(/DAI\s+MiCA: no/);
+    expect(out).toMatch(/USDC\s+6 decimals/);
+    expect(out).toMatch(/DAI\s+18 decimals/);
   });
 
   it('[UNIT] formatTokens — should filter to a network and show addresses (edge case)', () => {

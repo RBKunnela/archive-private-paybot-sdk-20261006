@@ -156,7 +156,7 @@ paybot health
 # List supported networks (CAIP-2 + name)
 paybot networks
 
-# List supported tokens with MiCA flags (optionally for one network)
+# List supported tokens (optionally for one network)
 paybot tokens
 paybot tokens --network eip155:10
 ```
@@ -285,32 +285,38 @@ token signs against its own contract. USDC defaults everywhere; the public surfa
 unchanged for existing USDC callers.
 
 ```typescript
-import { TOKENS, getToken, getSupportedTokens } from 'paybot-sdk';
+import { getToken, getSupportedTokens } from 'paybot-sdk';
 
-getSupportedTokens();            // ['USDC', 'EURC', 'DAI']
-getToken('EURC')?.micaCompliant; // true
-getToken('DAI')?.micaCompliant;  // false (crypto-collateralized, not an EU EMT)
+getSupportedTokens();      // ['USDC', 'EURC', 'DAI']
+getToken('EURC')?.symbol;  // 'EURC'
+getToken('DAI')?.decimals; // 18
 
 await client.pay({
   resource: 'https://api.example.com/data',
   amount: '0.50',
   payTo: '0x....',
-  token: 'EURC',               // defaults to 'USDC'; unknown token → UNSUPPORTED_TOKEN
-  network: 'eip155:8453',
+  token: 'EURC',           // defaults to 'USDC'; unknown token → UNSUPPORTED_TOKEN
+  network: 'eip155:84532', // EURC testnet ships in the public registry
 });
 ```
 
 ### Token coverage
 
 Only `(token, network)` pairs verifiable against an **official issuer source** are
-shipped. A wrong contract address routes real funds to the wrong contract, so
-unverifiable pairs are deliberately omitted rather than guessed.
+shipped in the public registry. A wrong contract address routes real funds to the
+wrong contract, so unverifiable pairs are deliberately omitted rather than guessed.
+The public registry carries only addresses that are safe to ship open-core — mainnet
+addresses for regulated tokens (e.g. EURC mainnet) are operator-supplied at runtime
+(see below), not hardcoded here.
 
-| Token | Decimals | MiCA | Base | Base Sepolia | Optimism | Arbitrum | Polygon | Issuer source |
-|---|---|---|---|---|---|---|---|---|
-| USDC | 6 | yes | ✓ | ✓ | ✓ | ✓ | ✓ | [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses) |
-| EURC | 6 | yes | ✓ | ✓ | — | — | — | [Circle EURC addresses](https://developers.circle.com/stablecoins/eurc-contract-addresses) |
-| DAI | 18 | no | — | — | ✓ | ✓ | ✓ | [MakerDAO / Sky](https://docs.makerdao.com/) |
+| Token | Decimals | Base | Base Sepolia | Optimism | Arbitrum | Polygon | Issuer source |
+|---|---|---|---|---|---|---|---|
+| USDC | 6 | ✓ | ✓ | ✓ | ✓ | ✓ | [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses) |
+| EURC | 6 | override | ✓ | — | — | — | [Circle EURC addresses](https://developers.circle.com/stablecoins/eurc-contract-addresses) |
+| DAI | 18 | — | — | ✓ | ✓ | ✓ | [MakerDAO / Sky](https://docs.makerdao.com/) |
+
+`override` = the address is not shipped in the public registry; supply it at runtime
+via `tokenAddressOverrides` (see below).
 
 **Not currently supported:** PYUSD (Paxos — Ethereum + Solana only) and RLUSD (Ripple —
 Ethereum + XRPL only) are not deployed on any network in this registry, so they are not
@@ -318,6 +324,29 @@ registered.
 
 > Token contract addresses ship with their official issuer source cited inline in
 > `src/networks.ts`. Re-verify each address against the cited source before mainnet use.
+
+### Mainnet token addresses (operator-supplied)
+
+The public registry ships only addresses that are safe to distribute open-core
+(e.g. testnet deployments). Mainnet addresses for regulated tokens are **not**
+hardcoded in the SDK — inject them at runtime via `tokenAddressOverrides`
+(`symbol → caip2Network → address`):
+
+```typescript
+const client = new PayBotClient({
+  apiKey: 'pb_...',
+  botId: 'my-bot',
+  tokenAddressOverrides: {
+    EURC: { 'eip155:8453': '0x...' }, // your EURC mainnet contract address
+  },
+});
+```
+
+Address resolution precedence: explicit `PaymentRequest.tokenContract` →
+`tokenAddressOverrides[symbol][network]` → the public registry → otherwise a
+`PaymentResult` failure with code `TOKEN_ADDRESS_NOT_CONFIGURED`. This keeps the
+SDK from signing against a wrong or absent address when a mainnet token is not
+configured.
 
 ## Error Taxonomy
 
@@ -402,6 +431,62 @@ result = await client.pay(PaymentRequest(resource="https://api.example.com/data"
 ## MCP Integration
 
 For AI agent frameworks, use [paybot-mcp](https://github.com/RBKunnela/paybot-mcp) which wraps this SDK as an MCP server.
+
+## Roadmap & Status
+
+> **Legend:** ✅ shipped · 🟡 partial · 🔭 deferred (intentional) · ⬜ gap
+
+**Capability map** — what the SDK can do today:
+
+![paybot-sdk capability map](./.github/assets/paybot-sdk-capability-map.png)
+
+**Roadmap ahead** — the phased plan:
+
+![paybot-sdk roadmap](./.github/assets/paybot-sdk-roadmap-timeline.png)
+
+### What we've built
+
+**Core rail (hardened):** `PayBotClient` (pay/balance/history/setLimits/register/health/commission/API-keys) · x402 auto-handler · EIP-3009 signing · `MicropaymentEngine` · trust levels 0–5 · commission accounting · `paybot402()` middleware · self-hostable facilitator · CI hardening (CodeQL, OSV, 80% coverage gate, SHA-pinned actions).
+
+| Shipped | Gap ID |
+|---------|--------|
+| ✅ x402 **v2 conformance** — `upto` scheme, `PAYMENT-*` headers, CAIP-2 helpers | T1.1 + new |
+| ✅ **Webhook signature verification** (TS + Python, byte-identical HMAC) | T1.2 |
+| ✅ **Idempotency keys** (`X-Idempotency-Key` + LRU dedupe) | T1.3 |
+| ✅ **Error taxonomy** (`PayBotError` + 6 typed subclasses) | T1.4 |
+| ✅ **OpenTelemetry hooks** (opt-in, zero new deps) | T1.5 |
+| ✅ **Multi-bot pool + spend treasury** | T1.6 |
+| ✅ **EURC + token registry** (per-token EIP-712 domains) | T2.2 |
+| ✅ **AP2 settlement adapter** · 🔭 thin **MPP capability seam** (deferred to GA) | T2.3 |
+| ✅ **Python SDK 0.1.0** (real EIP-3009 signing) | T3.2 (partial) |
+
+**Tier 1 (credibility blockers) is 100% complete** (T1.1–T1.6). Test posture: 331 TS tests / 98.66% coverage · 52 Python tests.
+
+### Current gaps
+
+- ⬜ **Network expansion (T2.1)** — still **Base + Base Sepolia only**; add Optimism / Arbitrum / Polygon.
+- ⬜ **CCTP V2 cross-chain receive** — ⏰ *time-sensitive: Circle CCTP V1 deprecates 2026-07-31.*
+- ⬜ **Refund + reversal helpers (T2.4)** · ⬜ **Streaming subscriptions (T2.5)** · ⬜ **Wallet-connect bridge (T2.6)**
+- 🟡 **Token breadth** — USDC + EURC done; PYUSD / RLUSD / DAI not added (operator-gated).
+- 🟡 **Language ports (T3.2)** — Python runtime shipped (middleware/x402-handler unported); Go / Rust not started.
+- ⬜ **Framework ports (T3.1)** (Hono/Next/NestJS/FastAPI/Django) · ⬜ **CLI (T3.4)** · ⬜ **Examples + tutorial site (T3.5)** · ⬜ **More MCP tools (T3.3)** · ⬜ **L402 shim (T3.6)**
+- 🔭 **Full MPP (T2.3)** — deliberately deferred; Stripe/Tempo MPP is still preview and shares no signing code with EIP-3009. Detect-only seam ships now.
+
+### Roadmap ahead
+
+Prioritized by internal gap severity × external leverage (EU-bank credibility, live distribution channels, hard deadlines).
+
+**Phase A — Near-term (rail credibility):**
+1. Network expansion (Optimism + Arbitrum + Polygon) — closes the biggest surface gap vs. Coinbase/Circle/Crossmint.
+2. CCTP V2 cross-chain receive — ⏰ hard deadline (CCTP V1 dies 2026-07-31).
+3. Refund + reversal helpers — table-stakes for real commerce.
+4. Token breadth (PYUSD/RLUSD/DAI, operator-gated).
+
+**Phase B — Mid-term (agent-economy surface):** streaming subscriptions · CLI · framework ports (Hono/Next/FastAPI first) · examples + tutorial site · wallet-connect bridge.
+
+**Phase C — Strategic / opportunistic:** full MPP (on GA) · more language ports (Go/Rust) · L402/Lightning shim · more MCP tools.
+
+**Strategic posture:** the moat is *self-hosted, non-custodial, MIT, trust-layer-in-the-SDK* — which custodial/portal-locked rivals (Coinbase Agentic Wallets, Circle, Crossmint, Payman) structurally cannot copy. Being a clean x402 settlement engine makes paybot AP2-pluggable and AgentCore-compatible today — so MPP can wait for GA.
 
 ## Deployment Options
 

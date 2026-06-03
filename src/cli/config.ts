@@ -192,8 +192,7 @@ export function formatNetworks(): string {
 }
 
 /**
- * Format the supported tokens (optionally for one network) as plain text,
- * including the MiCA-compliance flag.
+ * Format the supported tokens (optionally for one network) as plain text.
  *
  * When `network` is given, only tokens deployed on that network are listed,
  * each annotated with its contract address.
@@ -203,7 +202,7 @@ export function formatNetworks(): string {
  *          when a network filter matches no tokens.
  *
  * @example
- *   formatTokens();                 // 'USDC  MiCA: yes\nEURC  MiCA: yes\nDAI   MiCA: no'
+ *   formatTokens();                 // 'USDC  6 decimals\nEURC  6 decimals\nDAI   18 decimals'
  *   formatTokens('eip155:10');      // USDC + DAI with addresses (no EURC on OP)
  */
 export function formatTokens(network?: string): string {
@@ -217,11 +216,9 @@ export function formatTokens(network?: string): string {
     if (network) {
       const address = token.addressByNetwork[network];
       if (!address) continue; // not deployed on the requested network
-      lines.push(
-        `${symbol.padEnd(width)}  MiCA: ${token.micaCompliant ? 'yes' : 'no '}  ${address}`,
-      );
+      lines.push(`${symbol.padEnd(width)}  ${token.decimals} decimals  ${address}`);
     } else {
-      lines.push(`${symbol.padEnd(width)}  MiCA: ${token.micaCompliant ? 'yes' : 'no'}`);
+      lines.push(`${symbol.padEnd(width)}  ${token.decimals} decimals`);
     }
   }
 

@@ -51,10 +51,24 @@ def test_mandate_to_requirements_happy():
     assert reqs.asset == "eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 
 
-def test_mandate_to_requirements_eurc():
-    reqs = ap2_mandate_to_payment_requirements(_mandate(currency="EURC"))
+def test_mandate_to_requirements_eurc_testnet():
+    # EURC Base Sepolia testnet — the only EURC address in the public registry.
+    reqs = ap2_mandate_to_payment_requirements(
+        _mandate(currency="EURC", network="eip155:84532")
+    )
     assert reqs.token == "EURC"
-    assert "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42" in reqs.asset
+    assert "0x808456652fdb597867f38412077A9182bf77359F" in reqs.asset
+
+
+def test_mandate_to_requirements_eurc_mainnet_unsupported_network():
+    # EURC mainnet address is operator-private and intentionally absent from the
+    # public registry, so a mainnet AP2 mandate must be rejected (not leak / guess).
+    with pytest.raises(PayBotApiError) as ei:
+        ap2_mandate_to_payment_requirements(
+            _mandate(currency="EURC", network="eip155:8453")
+        )
+    assert ei.value.code == "UNSUPPORTED_NETWORK"
+    assert ei.value.status_code == 400
 
 
 def test_mandate_to_requirements_missing_field_raises():

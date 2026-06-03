@@ -25,7 +25,12 @@ import httpx
 
 from .crypto import generate_eip3009_nonce
 from .errors import PayBotApiError, get_error_message
-from .networks import EIP3009_TYPES, NETWORKS, get_eip712_domain, get_token
+from .networks import (
+    EIP3009_TYPES,
+    get_eip712_domain,
+    get_token,
+    resolve_token_address,
+)
 from .telemetry import TelemetryConfig, with_span
 from .types import (
     ApiKeyListItem,
@@ -169,6 +174,11 @@ class PayBotClient:
         self._facilitator_url = config.facilitator_url or DEFAULT_FACILITATOR_URL
         self._operator_id = config.operator_id or DEFAULT_OPERATOR_ID
         self._wallet_private_key = config.wallet_private_key
+        # Operator-supplied token address overrides (symbol -> caip2 -> address).
+        # Lets the operator inject mainnet addresses that are intentionally absent
+        # from the public open-core registry. Mirrors the TS client's
+        # tokenAddressOverrides. See PayBotConfig.token_address_overrides.
+        self._token_address_overrides = config.token_address_overrides
         self._max_retries = config.max_retries
         self._timeout_ms = config.timeout_ms
         # Opt-in telemetry; None means tracing is a complete no-op.
@@ -379,7 +389,6 @@ class PayBotClient:
 
         async def _do_pay(pay_span: Any) -> PaymentResult:
             try:
-                network = NETWORKS.get(network_id)
                 symbol = request.token or "USDC"
 
                 # Resolve the token from the registry. Unknown symbol → failure.
@@ -397,16 +406,35 @@ class PayBotClient:
                         error_code="UNSUPPORTED_TOKEN",
                     )
 
-                # Token contract precedence: explicit override > token address on
-                # this network > legacy USDC fallbacks.
-                token_contract = (
-                    request.token_contract
-                    or token.address_by_network.get(network_id)
-                    or (network.usdc_address if network is not None else None)
-                    or "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+                # Token contract precedence (mirrors the TS client):
+                #   1. explicit request.token_contract
+                #   2. operator-injected override (config.token_address_overrides)
+                #   3. the public open-core registry (token.address_by_network)
+                # If none resolves (e.g. EURC mainnet, which is operator-private and
+                # intentionally absent from the public registry), fail loudly with
+                # TOKEN_ADDRESS_NOT_CONFIGURED rather than signing against a wrong or
+                # absent address.
+                token_contract = request.token_contract or resolve_token_address(
+                    symbol, network_id, self._token_address_overrides
                 )
+                if not token_contract:
+                    if pay_span is not None:
+                        pay_span.set_attribute("success", False)
+                    return PaymentResult(
+                        success=False,
+                        gross_amount="0",
+                        net_amount="0",
+                        commission_amount="0",
+                        commission_rate=0,
+                        error=(
+                            f"No contract address configured for token {symbol} on "
+                            f"network {network_id}. Provide it via "
+                            f"PayBotConfig.token_address_overrides[{symbol}][{network_id}]."
+                        ),
+                        error_code="TOKEN_ADDRESS_NOT_CONFIGURED",
+                    )
 
-                # Use the token's decimals (USDC and EURC both use 6).
+                # Use the token's decimals (USDC/EURC use 6; DAI uses 18).
                 amount_base_units = self._to_base_units(request.amount, token.decimals)
 
                 idem_headers: Optional[Dict[str, str]] = (
@@ -598,8 +626,10 @@ class PayBotClient:
         :param request: The originating :class:`PaymentRequest` (``pay_to`` is the
             EIP-3009 ``to`` recipient).
         :param amount_base_units: Amount in base units (decimal string).
-        :param token_contract: Token contract address (accepted for parity; the
-            verifying contract actually used comes from the resolved domain).
+        :param token_contract: The resolved token contract address to sign against.
+            Passed through to the EIP-712 domain's ``verifyingContract`` so an
+            operator-injected address (absent from the public registry, e.g. EURC
+            mainnet) signs correctly.
         :param network_id: CAIP-2 network id, e.g. ``"eip155:84532"``.
         :param symbol: Token ticker to sign for (default ``"USDC"``).
         :returns: JSON string carrying the signed EIP-3009 authorization.
@@ -615,7 +645,7 @@ class PayBotClient:
         if self._wallet_private_key is None:
             raise ValueError("_sign_payload requires a wallet_private_key")
 
-        domain = get_eip712_domain(network_id, symbol)
+        domain = get_eip712_domain(network_id, symbol, token_contract)
         if domain is None:
             raise ValueError(f"No EIP-712 domain for network: {network_id}")
 

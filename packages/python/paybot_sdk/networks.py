@@ -150,12 +150,17 @@ class TokenConfig:
       signature, so it MUST match the deployed contract byte-for-byte.
 
     When ``eip712_name`` is omitted, :func:`get_eip712_domain` falls back to
-    ``name``. Mirrors networks.ts:66-83.
+    ``name``. Mirrors ``src/networks.ts`` ``TokenConfig``.
+
+    ``address_by_network`` carries only the addresses that are safe to ship
+    open-core (e.g. testnet deployments). Mainnet addresses for regulated tokens
+    are resolved at runtime from the operator layer via
+    ``PayBotConfig.token_address_overrides`` (mirrors the TS
+    ``PayBotConfig.tokenAddressOverrides``) — never hardcoded here.
 
     :param symbol: Token ticker symbol, the registry key (e.g. ``'USDC'``).
-    :param decimals: Number of base-unit decimals (USDC and EURC both use 6).
+    :param decimals: Number of base-unit decimals (USDC/EURC use 6; DAI uses 18).
     :param name: Human-readable token name (not necessarily the EIP-712 name).
-    :param mica_compliant: Whether the token is MiCA-compliant.
     :param address_by_network: Map of CAIP-2 network id -> ERC-20 contract address.
     :param eip712_name: On-chain EIP-712 domain ``name`` (defaults to ``name``).
     """
@@ -163,7 +168,6 @@ class TokenConfig:
     symbol: str
     decimals: int
     name: str
-    mica_compliant: bool
     address_by_network: Dict[str, str] = field(default_factory=dict)
     eip712_name: Optional[str] = None
 
@@ -174,12 +178,17 @@ class TokenConfig:
 #: deliberately omitted (a wrong contract address routes real funds to the wrong
 #: contract).
 #:
+#: This public open-core registry carries only addresses that are safe to ship
+#: open-core. Mainnet addresses for regulated tokens (e.g. EURC mainnet) are
+#: operator-private — injected at runtime via ``PayBotConfig.token_address_overrides``
+#: and resolved through :func:`resolve_token_address`, never hardcoded here.
+#:
 #: Coverage notes (T2.1/T2.2 expansion):
 #:   - USDC native (Circle) on Base, Base Sepolia, Optimism, Arbitrum One, Polygon.
-#:   - EURC native (Circle) only on Base/Base Sepolia among these networks — NOT on
-#:     Optimism/Arbitrum/Polygon, so omitted there.
+#:   - EURC: public registry carries ONLY the Base Sepolia testnet deployment. The
+#:     EURC mainnet address is operator-private (injected via overrides).
 #:   - DAI (MakerDAO/Sky) on Optimism, Arbitrum One, Polygon. Crypto-collateralized,
-#:     not an EU EMT -> ``mica_compliant=False``.
+#:     not a regulated EU EMT, so it is public-safe to ship in the open-core registry.
 #:   - PYUSD (Paxos: Ethereum+Solana) and RLUSD (Ripple: Ethereum+XRPL) are not
 #:     deployed on any network in this registry, so they are intentionally absent.
 TOKENS: Dict[str, TokenConfig] = {
@@ -188,7 +197,6 @@ TOKENS: Dict[str, TokenConfig] = {
         decimals=6,
         name="USD Coin",
         eip712_name="USDC",
-        mica_compliant=True,
         address_by_network={
             # All native USDC (Circle).
             # Source: https://developers.circle.com/stablecoins/usdc-contract-addresses
@@ -204,11 +212,12 @@ TOKENS: Dict[str, TokenConfig] = {
         decimals=6,
         name="EURC",
         eip712_name="EURC",
-        mica_compliant=True,
         address_by_network={
-            # Circle native EURC — only Base + Base Sepolia among these networks.
+            # Public open-core registry carries ONLY the Base Sepolia testnet
+            # deployment. The EURC mainnet address is operator-private and must be
+            # injected at runtime via PayBotConfig.token_address_overrides — it is
+            # deliberately NOT hardcoded here.
             # Source: https://developers.circle.com/stablecoins/eurc-contract-addresses
-            "eip155:8453": "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42",
             "eip155:84532": "0x808456652fdb597867f38412077A9182bf77359F",
         },
     ),
@@ -217,8 +226,6 @@ TOKENS: Dict[str, TokenConfig] = {
         decimals=18,
         name="Dai Stablecoin",
         eip712_name="Dai Stablecoin",
-        # DAI is crypto-collateralized (MakerDAO/Sky), not an EU-authorized EMT.
-        mica_compliant=False,
         address_by_network={
             # MakerDAO/Sky canonical DAI deployments (bridged).
             # Source: https://docs.makerdao.com/ + chain-native bridge deployments.
@@ -241,7 +248,9 @@ def get_token(symbol: str) -> Optional[TokenConfig]:
 
 
 def get_token_address(symbol: str, network: str) -> Optional[str]:
-    """Resolve a token's ERC-20 contract address on a specific network (networks.ts:147).
+    """Resolve a token's ERC-20 contract address on a specific network.
+
+    Mirrors ``getTokenAddress`` in ``src/networks.ts``.
 
     :param symbol: Token ticker (e.g. ``'USDC'``).
     :param network: The CAIP-2 network id (e.g. ``'eip155:8453'``).
@@ -254,6 +263,44 @@ def get_token_address(symbol: str, network: str) -> Optional[str]:
     return token.address_by_network.get(network)
 
 
+def resolve_token_address(
+    symbol: str,
+    network: str,
+    overrides: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Optional[str]:
+    """Resolve a token's contract address with an optional operator override layer.
+
+    Mirrors ``resolveTokenAddress`` in ``src/networks.ts``. Resolution precedence
+    (first match wins):
+
+    1. ``overrides[symbol][network]`` — operator-injected address (e.g. a mainnet
+       deployment intentionally kept out of the public registry).
+    2. The public :data:`TOKENS` registry (:func:`get_token_address`).
+
+    The helper is deliberately generic — it carries no token-specific or
+    regulatory data, only the symbol -> network -> address lookup.
+
+    :param symbol: Token ticker (e.g. ``'USDC'``, ``'EURC'``).
+    :param network: The CAIP-2 network id (e.g. ``'eip155:8453'``).
+    :param overrides: Optional operator-supplied ``symbol -> network -> address`` map.
+    :returns: The resolved contract address, or ``None`` when neither the override
+        map nor the public registry has an entry.
+
+    :example:
+        >>> resolve_token_address("EURC", "eip155:8453") is None
+        True
+        >>> resolve_token_address(
+        ...     "EURC", "eip155:8453", {"EURC": {"eip155:8453": "0xabc"}}
+        ... )
+        '0xabc'
+    """
+    if overrides is not None:
+        override = overrides.get(symbol, {}).get(network)
+        if override:
+            return override
+    return get_token_address(symbol, network)
+
+
 def get_supported_tokens() -> List[str]:
     """List the ticker symbols of all tokens in the registry (networks.ts:159).
 
@@ -262,11 +309,16 @@ def get_supported_tokens() -> List[str]:
     return list(TOKENS.keys())
 
 
-def get_eip712_domain(network: str, symbol: str = "USDC") -> Optional[Dict[str, Any]]:
-    """Build the token-specific EIP-712 domain for EIP-3009 signing (networks.ts:188).
+def get_eip712_domain(
+    network: str,
+    symbol: str = "USDC",
+    verifying_contract_override: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the token-specific EIP-712 domain for EIP-3009 signing.
 
-    The domain is token-specific: USDC signs as ``name='USDC'`` at the USDC
-    contract address; EURC signs as ``name='EURC'`` at the EURC contract address.
+    Mirrors ``getEip712Domain`` in ``src/networks.ts``. The domain is
+    token-specific: USDC signs as ``name='USDC'`` at the USDC contract address;
+    EURC signs as ``name='EURC'`` at the EURC contract address.
 
     REGRESSION GUARANTEE: for ``symbol == 'USDC'`` this returns a domain
     byte-identical to ``EIP712_DOMAINS[network]`` (same ``name``, ``version``,
@@ -277,8 +329,13 @@ def get_eip712_domain(network: str, symbol: str = "USDC") -> Optional[Dict[str, 
 
     :param network: The CAIP-2 network id (e.g. ``'eip155:8453'``).
     :param symbol: The token ticker (default ``'USDC'``).
-    :returns: The EIP-712 domain dict, or ``None`` when the token is unknown OR
-        the token has no address / no network entry for ``network``.
+    :param verifying_contract_override: Optional contract address to sign against,
+        used when the address is supplied at runtime by the operator layer (i.e. the
+        token has no public-registry entry for ``network``, such as EURC mainnet).
+        When omitted, the address comes from the public :data:`TOKENS` registry.
+    :returns: The EIP-712 domain dict, or ``None`` when the token is unknown, the
+        network is unsupported, OR no contract address can be resolved (neither an
+        override nor a public-registry entry).
 
     :example:
         >>> get_eip712_domain("eip155:8453", "USDC")["name"]
@@ -289,7 +346,7 @@ def get_eip712_domain(network: str, symbol: str = "USDC") -> Optional[Dict[str, 
     token = TOKENS.get(symbol)
     if token is None:
         return None
-    verifying_contract = token.address_by_network.get(network)
+    verifying_contract = verifying_contract_override or token.address_by_network.get(network)
     network_config = NETWORKS.get(network)
     if not verifying_contract or network_config is None:
         return None
