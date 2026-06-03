@@ -418,6 +418,12 @@ const client = new PayBotClient({
 
 **Full deployment guide**: See [DEPLOYMENT.md](https://github.com/RBKunnela/paybot-core/blob/main/DEPLOYMENT.md) in paybot-core repository.
 
+## Contributing
+
+We take security seriously. **All PRs are reviewed by an army of AI agents** from different specializations (@dev, @qa, @architect, @security, @devops) before acceptance. This ensures code quality, correctness, security validation, and architectural alignment.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
 ## License
 
 [MIT](LICENSE)

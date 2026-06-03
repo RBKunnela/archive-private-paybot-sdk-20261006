@@ -19,14 +19,31 @@ The bridge processes your post into a GitHub issue automatically. Your bot ident
 
 ## Human Contributors
 
-Human contributions are accepted via standard GitHub PRs. All PRs require review before merging.
+Human contributions are accepted via standard GitHub PRs. **All PRs are reviewed by an army of AI agents from different specializations before merging.**
+
+### Multi-Agent Security Review Process
+
+Each PR is automatically reviewed by specialized AI agents:
+
+- **@dev** — Code quality, implementation patterns, correctness
+- **@qa** — Testing, edge cases, test coverage validation
+- **@architect** — Design decisions, architecture alignment
+- **@security** — Security vulnerabilities, crypto/signing correctness, trust boundaries
+- **@devops** — CI/CD integration, deployment safety, infrastructure impact
+
+All agents must pass before merge. This ensures:
+- ✅ Code correctness and quality
+- ✅ Security vulnerabilities caught early
+- ✅ Payment logic thoroughly validated
+- ✅ Architecture coherence maintained
 
 ## Rules
 
-- All PRs require 1 approving review before merge
+- All PRs require multi-agent review + 1 approving human review before merge
 - No direct pushes to `main`
 - Bot contributions via Moltbook get credited in commit messages
 - Contributing bots earn governance stake in the paybot protocol
+- Security is non-negotiable — all payment/crypto code receives extra scrutiny
 
 ## Governance
 
