@@ -1,10 +1,10 @@
 # paybot-sdk
 
-USDC payments for bots via the [x402 protocol](https://www.x402.org/). One dependency (`viem`), 7 files, typed everything.
+USDC and EURC payments for bots via the [x402 protocol](https://www.x402.org/). One dependency (`viem`), typed everything.
 
 ## Key Features
 
-- **One dependency** (`viem`), 7 files, fully typed
+- **One dependency** (`viem`), fully typed
 - **Simple API** — register your bot and make payments in 2 lines of code
 - **Network support** — Base, Optimism, Arbitrum One, Polygon PoS mainnets + Base Sepolia testnet (EIP155)
 - **Mock mode** for testing without real transactions
@@ -398,6 +398,25 @@ const result = await pool.payAs('bot-1', { resource, amount: '12.00', payTo });
 pool.remainingTreasuryUsd();        // 488 after a successful $12 spend
 ```
 
+## Micropayment Batching
+
+`MicropaymentEngine` queues many sub-cent payments and settles them as one signed batch, so per-payment gas is amortized across the group. Auto-settle fires when the batch window closes or the count/total thresholds are reached.
+
+```typescript
+import { MicropaymentEngine } from 'paybot-sdk';
+
+const engine = new MicropaymentEngine({
+  walletPrivateKey: '0x...',
+  batchWindowMs: 60_000,   // default 60s window
+  minPaymentCount: 100,    // auto-settle thresholds
+  minTotalUsd: 1.0,
+});
+
+const id = await engine.queuePayment('0xRecipient...', '0.001');  // returns paymentId
+const batch = await engine.batchPayments([id]);                   // signed BatchedSettlement
+engine.getQueueStatistics();                                      // BatchStatistics
+```
+
 ## AP2 + MPP
 
 paybot is a clean x402 settlement engine, so a Google **AP2** (A2A x402-extension) mandate can settle through it directly. **MPP** (Stripe/Tempo) is still preview — the SDK ships only a detect-and-route capability seam, not a full client.
@@ -525,6 +544,12 @@ const client = new PayBotClient({
 **Quick start guide**: See [SELF_HOSTING.md](./SELF_HOSTING.md) in this repository.
 
 **Full deployment guide**: See [DEPLOYMENT.md](https://github.com/RBKunnela/paybot-core/blob/main/DEPLOYMENT.md) in paybot-core repository.
+
+## Contributing
+
+We take security seriously. **All PRs are reviewed by an army of AI agents** from different specializations (@dev, @qa, @architect, @security, @devops) before acceptance. This ensures code quality, correctness, security validation, and architectural alignment.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ## License
 

@@ -31,6 +31,7 @@ Thumbs.db
 !.aios/workflows/
 !.aios/data/
 .aios-core/
+.aiox-core/
 squads/
 
 # === Documentation (all process docs, research, epics, deployments — go to Confluence) ===
@@ -44,6 +45,9 @@ FINAL-DEPLOYMENT-SUMMARY.md
 IMPLEMENTATION-COMPLETE.md
 
 # === Claude Code (local agent config, not part of app) ===
+# Blanket ignore: AIOX framework scaffolding (.claude/) is local-only and must
+# not ship in the public SDK. Kept the explicit subdir lines below for clarity.
+.claude/
 .claude/settings.local.json
 .claude/skills/
 .claude/commands/

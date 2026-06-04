@@ -53,6 +53,23 @@ updates:
         applies-to: security-updates
         update-types: ["minor"]
 
+    # ---- Pin-and-defer: cap ecosystem tooling majors (incident 2026-06-03) ----
+    # ESLint 10 is flat-config-only and TS 6 + typescript-eslint 8 force a
+    # repo-wide lint/type migration. Until that migration lands (tracked as a
+    # backlog epic), the weekly dev-deps group dragged these majors in and broke
+    # the build (lint / type-check exit 2). Cap MAJORS only here — minor/patch
+    # (incl. security) still flow. Remove these entries when the flat-config/TS6
+    # migration epic completes.
+    ignore:
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@typescript-eslint/eslint-plugin"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@typescript-eslint/parser"
+        update-types: ["version-update:semver-major"]
+
   # ---------- GitHub Actions ecosystem ----------
   - package-ecosystem: "github-actions"
     directory: "/"
