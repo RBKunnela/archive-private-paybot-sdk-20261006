@@ -49,6 +49,9 @@ export class MicropaymentEngine {
     minPaymentCount?: number;
     minTotalUsd?: number;
   }) {
+    if (typeof config.walletPrivateKey !== 'string' || config.walletPrivateKey.length === 0) {
+      throw new Error('MicropaymentEngine: walletPrivateKey is required and must be a non-empty string');
+    }
     if (!config.walletPrivateKey.startsWith('0x')) {
       throw new Error('MicropaymentEngine: walletPrivateKey must start with 0x');
     }

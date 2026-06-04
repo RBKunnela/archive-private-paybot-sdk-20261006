@@ -162,11 +162,32 @@ describe('[UNIT] MicropaymentEngine constructor', () => {
             '4c0883a69102937d6231471b5dbb6204fe5129617082792ae468d01a3f362318',
         }),
     ).toThrow(/walletPrivateKey must start with 0x/);
+  });
 
-    // Empty string also fails the 0x guard.
+  // -------------------------------------------------------------------------
+  // B-2b: regression (paybot-sdk@0.3.0 bug) — missing walletPrivateKey must
+  // throw a CLEAN validation error mentioning the field, NOT the cryptic
+  // 'Cannot read properties of undefined (reading 'startsWith')'.
+  // -------------------------------------------------------------------------
+
+  it('[UNIT] MicropaymentEngine — should throw a clean walletPrivateKey-mentioning error (not the cryptic startsWith TypeError) when config omits walletPrivateKey', () => {
+    // The presence/type guard runs BEFORE the .startsWith('0x') call, so an
+    // empty config gives a validation error, not a TypeError on undefined.
+    expect(
+      // @ts-expect-error — intentionally constructing with an invalid config
+      // (missing required walletPrivateKey) to exercise the runtime guard.
+      () => new MicropaymentEngine({}),
+    ).toThrow(/walletPrivateKey/);
+    expect(
+      // @ts-expect-error — see above.
+      () => new MicropaymentEngine({}),
+    ).not.toThrow(/startsWith/);
+  });
+
+  it('[UNIT] MicropaymentEngine — should throw the clean walletPrivateKey-required error when walletPrivateKey is an empty string', () => {
     expect(
       () => new MicropaymentEngine({ walletPrivateKey: '' }),
-    ).toThrow(/walletPrivateKey must start with 0x/);
+    ).toThrow(/walletPrivateKey is required and must be a non-empty string/);
   });
 
   // -------------------------------------------------------------------------
