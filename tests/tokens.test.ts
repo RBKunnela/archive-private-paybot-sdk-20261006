@@ -22,10 +22,19 @@ const EURC_MAINNET_OVERRIDE = '0xAbCdEf0123456789AbCdEf0123456789AbCdEf01';
 const USDC_BASE_MAINNET = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e';
 
+// T2.1/T2.2 expansion — native USDC on the new L2 mainnets (Circle).
+const USDC_OPTIMISM = '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85';
+const USDC_ARBITRUM = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831';
+const USDC_POLYGON = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+// Canonical DAI (MakerDAO/Sky).
+const DAI_OPTIMISM = '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1';
+const DAI_ARBITRUM = '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1';
+const DAI_POLYGON = '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063';
+
 describe('TOKENS registry', () => {
-  it('should include USDC and EURC', () => {
-    expect(getSupportedTokens()).toEqual(expect.arrayContaining(['USDC', 'EURC']));
-    expect(getSupportedTokens().length).toBe(2);
+  it('should include USDC, EURC and DAI', () => {
+    expect(getSupportedTokens()).toEqual(expect.arrayContaining(['USDC', 'EURC', 'DAI']));
+    expect(getSupportedTokens().length).toBe(3);
   });
 
   it('should keep USDC_CONFIG exported for back-compat', () => {
@@ -54,9 +63,24 @@ describe('getToken', () => {
     expect('micaCompliant' in eurc!).toBe(false);
   });
 
+  it('[happy] should return DAI config (18 decimals)', () => {
+    const dai = getToken('DAI');
+    expect(dai).toBeDefined();
+    expect(dai!.symbol).toBe('DAI');
+    expect(dai!.decimals).toBe(18);
+    expect(dai!.name).toBe('Dai Stablecoin');
+    expect(dai!.eip712Name).toBe('Dai Stablecoin');
+    // Premium EU-compliance metadata must NOT exist on the public token config.
+    expect('micaCompliant' in dai!).toBe(false);
+  });
+
   it('[error/edge] should return undefined for an unknown symbol', () => {
     expect(getToken('DOGE')).toBeUndefined();
     expect(getToken('')).toBeUndefined();
+    // PYUSD and RLUSD are intentionally NOT in the registry (no deployment on any
+    // supported network) — they must resolve to undefined, not a guessed entry.
+    expect(getToken('PYUSD')).toBeUndefined();
+    expect(getToken('RLUSD')).toBeUndefined();
   });
 });
 
@@ -69,6 +93,16 @@ describe('getTokenAddress', () => {
     expect(getTokenAddress('USDC', 'eip155:84532')).toBe(NETWORKS['eip155:84532'].usdcAddress);
   });
 
+  it('[happy] should resolve USDC on every new L2 mainnet (T2.1)', () => {
+    expect(getTokenAddress('USDC', 'eip155:10')).toBe(USDC_OPTIMISM);
+    expect(getTokenAddress('USDC', 'eip155:42161')).toBe(USDC_ARBITRUM);
+    expect(getTokenAddress('USDC', 'eip155:137')).toBe(USDC_POLYGON);
+    // Registry address must equal the network config's usdcAddress (no divergence).
+    expect(getTokenAddress('USDC', 'eip155:10')).toBe(NETWORKS['eip155:10'].usdcAddress);
+    expect(getTokenAddress('USDC', 'eip155:42161')).toBe(NETWORKS['eip155:42161'].usdcAddress);
+    expect(getTokenAddress('USDC', 'eip155:137')).toBe(NETWORKS['eip155:137'].usdcAddress);
+  });
+
   it('[happy] should resolve EURC testnet from the public registry', () => {
     expect(getTokenAddress('EURC', 'eip155:84532')).toBe(EURC_BASE_SEPOLIA);
   });
@@ -78,6 +112,24 @@ describe('getTokenAddress', () => {
     expect(getTokenAddress('EURC', 'eip155:8453')).toBeUndefined();
   });
 
+  it('[edge] EURC is NOT deployed on the new L2s — must resolve undefined', () => {
+    // Circle does not deploy native EURC on Optimism/Arbitrum/Polygon.
+    expect(getTokenAddress('EURC', 'eip155:10')).toBeUndefined();
+    expect(getTokenAddress('EURC', 'eip155:42161')).toBeUndefined();
+    expect(getTokenAddress('EURC', 'eip155:137')).toBeUndefined();
+  });
+
+  it('[happy] should resolve DAI on each network it is deployed to (T2.2)', () => {
+    expect(getTokenAddress('DAI', 'eip155:10')).toBe(DAI_OPTIMISM);
+    expect(getTokenAddress('DAI', 'eip155:42161')).toBe(DAI_ARBITRUM);
+    expect(getTokenAddress('DAI', 'eip155:137')).toBe(DAI_POLYGON);
+  });
+
+  it('[edge] DAI is NOT registered on Base/Base Sepolia — must resolve undefined', () => {
+    expect(getTokenAddress('DAI', 'eip155:8453')).toBeUndefined();
+    expect(getTokenAddress('DAI', 'eip155:84532')).toBeUndefined();
+  });
+
   it('[error] should return undefined for unknown token', () => {
     expect(getTokenAddress('DOGE', 'eip155:8453')).toBeUndefined();
   });
@@ -85,6 +137,7 @@ describe('getTokenAddress', () => {
   it('[edge] should return undefined for unsupported network on a known token', () => {
     expect(getTokenAddress('USDC', 'eip155:1')).toBeUndefined();
     expect(getTokenAddress('EURC', 'eip155:1')).toBeUndefined();
+    expect(getTokenAddress('DAI', 'eip155:1')).toBeUndefined();
   });
 });
 
@@ -163,6 +216,28 @@ describe('getEip712Domain', () => {
     expect(eurc.name).toBe('EURC');
     expect(eurc.verifyingContract).toBe(EURC_BASE_SEPOLIA);
     expect(eurc.chainId).toBe(84532);
+  });
+
+  it('[happy/regression] should produce the legacy USDC domain on each new L2 mainnet', () => {
+    for (const network of ['eip155:10', 'eip155:42161', 'eip155:137'] as const) {
+      const domain = getEip712Domain(network, 'USDC')!;
+      expect(domain).toEqual(EIP712_DOMAINS[network]);
+      expect(domain.name).toBe('USDC');
+      expect(domain.chainId).toBe(NETWORKS[network].chainId);
+      expect(domain.verifyingContract).toBe(NETWORKS[network].usdcAddress);
+    }
+  });
+
+  it('[happy] should produce a DAI domain (name "Dai Stablecoin") where DAI is deployed', () => {
+    const dai = getEip712Domain('eip155:10', 'DAI')!;
+    expect(dai.name).toBe('Dai Stablecoin');
+    expect(dai.verifyingContract).toBe(DAI_OPTIMISM);
+    expect(dai.chainId).toBe(10);
+  });
+
+  it('[edge] should return undefined for DAI on a network where it is not registered', () => {
+    // DAI is not registered on Base, even though Base is a supported network.
+    expect(getEip712Domain('eip155:8453', 'DAI')).toBeUndefined();
   });
 
   it('[boundary] should return undefined for EURC mainnet without an override', () => {

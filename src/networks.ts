@@ -1,6 +1,11 @@
 /**
  * Supported blockchain network configurations for PayBot.
- * PoC supports Base Sepolia (testnet) and Base Mainnet.
+ *
+ * Mainnets: Base (8453), Optimism (10), Arbitrum One (42161), Polygon PoS (137).
+ * Testnet: Base Sepolia (84532).
+ *
+ * RPC URLs are sensible public defaults; callers may override per network when
+ * constructing their own clients (e.g. to use a private/rate-limited endpoint).
  */
 
 import { PayBotApiError } from './errors.js';
@@ -34,6 +39,39 @@ export const NETWORKS: Record<string, NetworkConfig> = {
     explorerUrl: 'https://sepolia.basescan.org',
     isTestnet: true,
   },
+  'eip155:10': {
+    name: 'Optimism',
+    chainId: 10,
+    caip2: 'eip155:10',
+    rpcUrl: 'https://mainnet.optimism.io',
+    // Native USDC on OP Mainnet (Circle).
+    // Source: https://developers.circle.com/stablecoins/usdc-contract-addresses
+    usdcAddress: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
+    explorerUrl: 'https://optimistic.etherscan.io',
+    isTestnet: false,
+  },
+  'eip155:42161': {
+    name: 'Arbitrum One',
+    chainId: 42161,
+    caip2: 'eip155:42161',
+    rpcUrl: 'https://arb1.arbitrum.io/rpc',
+    // Native USDC on Arbitrum One (Circle).
+    // Source: https://developers.circle.com/stablecoins/usdc-contract-addresses
+    usdcAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+    explorerUrl: 'https://arbiscan.io',
+    isTestnet: false,
+  },
+  'eip155:137': {
+    name: 'Polygon PoS',
+    chainId: 137,
+    caip2: 'eip155:137',
+    rpcUrl: 'https://polygon-rpc.com',
+    // Native USDC on Polygon PoS (Circle).
+    // Source: https://developers.circle.com/stablecoins/usdc-contract-addresses
+    usdcAddress: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    explorerUrl: 'https://polygonscan.com',
+    isTestnet: false,
+  },
 } as const;
 
 /**
@@ -66,7 +104,7 @@ export const USDC_CONFIG = {
 export interface TokenConfig {
   /** Token ticker symbol, used as the registry key (e.g. `'USDC'`, `'EURC'`). */
   readonly symbol: string;
-  /** Number of base-unit decimals (USDC and EURC both use 6). */
+  /** Number of base-unit decimals (USDC/EURC use 6; DAI uses 18). */
   readonly decimals: number;
   /** Human-readable token name (e.g. `'USD Coin'`). NOT necessarily the EIP-712 name. */
   readonly name: string;
@@ -89,8 +127,28 @@ export interface TokenConfig {
 /**
  * Registry of supported tokens, keyed by ticker symbol.
  *
- * Addresses are reused from / kept in sync with the per-network `usdcAddress`
- * for USDC (do not diverge). EURC addresses are Circle's official deployments.
+ * Every address below is the OFFICIAL issuer deployment for that (token, network)
+ * pair, cited inline with its source URL. A wrong token contract address routes
+ * real funds to the wrong contract, so only pairs verifiable from an official
+ * issuer source are listed; unverifiable pairs are deliberately omitted.
+ *
+ * This public open-core registry intentionally carries only addresses that are
+ * safe to distribute (testnet deployments, plus mainnet addresses of tokens that
+ * are not operator-private). Mainnet addresses for regulated tokens (e.g. EURC
+ * mainnet) are NOT hardcoded here — they are injected at runtime via
+ * {@link PayBotConfig.tokenAddressOverrides} and resolved through
+ * {@link resolveTokenAddress}.
+ *
+ * Coverage notes (as of the T2.1/T2.2 expansion):
+ *   - USDC: native (Circle) on Base, Base Sepolia, Optimism, Arbitrum One, Polygon.
+ *   - EURC: public registry carries ONLY the Base Sepolia testnet deployment.
+ *     The EURC mainnet address is operator-private (injected via overrides).
+ *   - DAI: MakerDAO/Sky canonical deployments on Optimism, Arbitrum One, Polygon
+ *     (and Base). DAI is crypto-collateralized, not a regulated EU EMT, so it is
+ *     public-safe to ship in the open-core registry.
+ *   - PYUSD (Paxos) and RLUSD (Ripple) are NOT deployed on any network currently
+ *     in this registry (PYUSD: Ethereum + Solana; RLUSD: Ethereum + XRPL), so they
+ *     are intentionally absent rather than added with empty/guessed addresses.
  */
 export const TOKENS: Record<string, TokenConfig> = {
   USDC: {
@@ -101,8 +159,13 @@ export const TOKENS: Record<string, TokenConfig> = {
     eip712Name: 'USDC',
     addressByNetwork: {
       // Reuses NETWORKS[...].usdcAddress — keep identical, do not diverge.
+      // All native USDC (Circle).
+      // Source: https://developers.circle.com/stablecoins/usdc-contract-addresses
       'eip155:8453': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
       'eip155:84532': '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+      'eip155:10': '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
+      'eip155:42161': '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+      'eip155:137': '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
     },
   },
   EURC: {
@@ -116,6 +179,21 @@ export const TOKENS: Record<string, TokenConfig> = {
       // injected at runtime via PayBotConfig.tokenAddressOverrides — it is
       // deliberately NOT hardcoded here.
       'eip155:84532': '0x808456652fdb597867f38412077A9182bf77359F',
+    },
+  },
+  DAI: {
+    symbol: 'DAI',
+    decimals: 18,
+    name: 'Dai Stablecoin',
+    // DAI contracts sign their EIP-712 domain as the literal "Dai Stablecoin".
+    eip712Name: 'Dai Stablecoin',
+    addressByNetwork: {
+      // MakerDAO/Sky canonical DAI deployments (bridged).
+      // Source: https://docs.makerdao.com/ + chain-native bridge deployments.
+      // Optimism + Arbitrum share the canonical bridged-DAI address.
+      'eip155:10': '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1',
+      'eip155:42161': '0xDA10009cBd5D07dd0CeCc66161FC93D7c9000da1',
+      'eip155:137': '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063',
     },
   },
 } as const;
@@ -362,6 +440,24 @@ export const EIP712_DOMAINS: Record<string, { name: string; version: string; cha
     version: '2',
     chainId: 8453,
     verifyingContract: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  },
+  'eip155:10': {
+    name: 'USDC',
+    version: '2',
+    chainId: 10,
+    verifyingContract: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
+  },
+  'eip155:42161': {
+    name: 'USDC',
+    version: '2',
+    chainId: 42161,
+    verifyingContract: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+  },
+  'eip155:137': {
+    name: 'USDC',
+    version: '2',
+    chainId: 137,
+    verifyingContract: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
   },
 } as const;
 

@@ -1,0 +1,20 @@
+{
+  "name": "paybot-example-raw-node-script",
+  "version": "1.0.0",
+  "description": "Smallest PayBot SDK smoke test: register a bot, check balance, make one payment.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --import tsx index.ts",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "paybot-sdk": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.3.0"
+  }
+}

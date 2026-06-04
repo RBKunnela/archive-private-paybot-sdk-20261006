@@ -10,6 +10,7 @@ export default defineConfig({
       exclude: [
         'src/index.ts',
         'src/types.ts', // type declarations only
+        'src/cli/index.ts', // commander wiring + executable entry (thin glue; pure logic lives in cli/config.ts)
         'src/**/*.d.ts',
       ],
       thresholds: {
