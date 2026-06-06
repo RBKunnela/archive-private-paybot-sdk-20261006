@@ -20,13 +20,16 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const SRC_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'src');
 
 /**
  * Forbidden substrings that must never appear anywhere in `src/`. Mirrors the
- * patterns in scripts/verify-open-core-boundary.sh (premium vendor/compliance
- * terms + the operator-private EURC mainnet contract address, both cases).
+ * literal-pattern denylist in scripts/verify-open-core-boundary.sh (premium
+ * vendor/compliance terms). The operator-private EURC mainnet address is NOT
+ * listed here as a literal — it is enforced separately via a one-way hash so
+ * this guard does not itself publish the value it guards (see below).
  */
 const FORBIDDEN_PATTERNS: readonly string[] = [
   'MiCA',
@@ -36,10 +39,22 @@ const FORBIDDEN_PATTERNS: readonly string[] = [
   'Onfido',
   'Tink',
   'PSD2',
-  // Operator-private EURC Base-mainnet address (upper + lower case forms).
-  '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42',
-  '0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42',
 ];
+
+/**
+ * SHA-256 of the lowercased operator-private EURC mainnet address (incl. the
+ * `0x` prefix). Storing only this one-way hash keeps the guarded value out of
+ * shippable code. Detection (below) extracts every `0x`-40-hex token from
+ * `src/`, lowercases + hashes each, and fails if any matches this hash —
+ * functionally equivalent to a literal denylist for the address.
+ */
+const FORBIDDEN_EURC_ADDR_SHA256 =
+  'b263ba174b7c339735c3734a9829d0dc5af0f5dd2efbfdfe79add4065a44148a';
+
+/** sha256 hex digest of `value` (lowercased), matching the bash verifier. */
+function sha256Lower(value: string): string {
+  return createHash('sha256').update(value.toLowerCase()).digest('hex');
+}
 
 /** Recursively collect every `.ts` file under `dir`. */
 function collectTsFiles(dir: string): string[] {
@@ -78,4 +93,23 @@ describe('open-core boundary (src/ tripwire)', () => {
       ).toEqual([]);
     });
   }
+
+  it('[boundary] src/ must not contain the operator-private token address', () => {
+    const tokenRe = /0x[0-9a-fA-F]{40}/g;
+    const offenders: string[] = [];
+    for (const file of files) {
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(tokenRe)) {
+        if (sha256Lower(match[0]) === FORBIDDEN_EURC_ADDR_SHA256) {
+          // Never echo the offending value — report by file only.
+          offenders.push(file);
+          break;
+        }
+      }
+    }
+    expect(
+      offenders,
+      `operator-private token address detected in:\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
 });

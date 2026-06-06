@@ -18,10 +18,12 @@ FORBIDDEN_PATTERNS=(
 
 ALLOWLIST_REGEX='(Psd2|Aml|Mica|Kyc)[A-Z][A-Za-z]*'
 
-FORBIDDEN_EURC_ADDRESSES=(
-  '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42'
-  '0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42'
-)
+# SHA-256 of the lowercased operator-private EURC mainnet address (incl. 0x prefix).
+# The literal address is NEVER stored here — only this one-way hash. Detection
+# extracts 0x-40-hex tokens from scanned content, lowercases + hashes each, and
+# compares to this hash. Functionally equivalent to a literal denylist, but the
+# guarded value never appears in shippable code (the guard no longer publishes it).
+FORBIDDEN_EURC_ADDR_SHA256='b263ba174b7c339735c3734a9829d0dc5af0f5dd2efbfdfe79add4065a44148a'
 
 red()   { printf '\033[31m%s\033[0m' "$1"; }
 green() { printf '\033[32m%s\033[0m' "$1"; }
@@ -52,8 +54,30 @@ check_pattern() {
   fi
 }
 
+# Hash-based detection for the operator-private token address. Extract every
+# 0x-40-hex token from src/, normalize (lowercase incl. 0x), sha256 each, and
+# compare to the stored hash. The address literal never appears in this code,
+# and the failure message never prints the offending value.
+check_forbidden_address_hash() {
+  local hits
+  hits="$(grep -rnoE --include='*.ts' '0x[0-9a-fA-F]{40}' "${SRC_DIR}" 2>/dev/null || true)"
+  [ -z "${hits}" ] && return 0
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    # line looks like: <file>:<lineno>:<token>
+    local file token token_hash
+    file="${line%%:*}"
+    token="${line##*:}"
+    token_hash="$(printf '%s' "${token,,}" | sha256sum | cut -d' ' -f1)"
+    if [ "${token_hash}" = "${FORBIDDEN_EURC_ADDR_SHA256}" ]; then
+      fail "operator-private token address detected in ${file}"
+      VIOLATIONS=$((VIOLATIONS + 1))
+    fi
+  done <<< "${hits}"
+}
+
 for p in "${FORBIDDEN_PATTERNS[@]}"; do check_pattern "$p"; done
-for a in "${FORBIDDEN_EURC_ADDRESSES[@]}"; do check_pattern "$a"; done
+check_forbidden_address_hash
 
 if [ "${VIOLATIONS}" -eq 0 ]; then ok "paybot-sdk boundary clean."; exit 0; fi
 fail "paybot-sdk boundary VIOLATED. ${VIOLATIONS} violation(s)."
