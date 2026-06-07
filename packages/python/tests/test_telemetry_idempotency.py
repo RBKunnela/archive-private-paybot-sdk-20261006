@@ -108,7 +108,13 @@ async def test_with_span_custom_prefix():
     assert tracer.spans[0].name == "myapp.x402.sign"
 
 
-async def test_with_span_ok_status_on_success():
+async def test_with_span_ok_status_on_success(monkeypatch):
+    # Asserts the released dict status shape. CodeRabbit #12 added a real-OTel
+    # Status path; force the dict fallback so this released-behavior test is
+    # deterministic regardless of whether opentelemetry is installed.
+    import paybot_sdk.telemetry as tel
+
+    monkeypatch.setattr(tel, "_OTEL", False)
     tracer = FakeTracer()
     cfg = TelemetryConfig(tracer=tracer)
 
@@ -120,8 +126,11 @@ async def test_with_span_ok_status_on_success():
     assert tracer.spans[0].ended is True
 
 
-async def test_with_span_returned_failure_object_is_ok_span():
+async def test_with_span_returned_failure_object_is_ok_span(monkeypatch):
     """A returned 'failure' object (nothing raised) still marks the span OK."""
+    import paybot_sdk.telemetry as tel
+
+    monkeypatch.setattr(tel, "_OTEL", False)
     tracer = FakeTracer()
     cfg = TelemetryConfig(tracer=tracer)
 
@@ -132,7 +141,10 @@ async def test_with_span_returned_failure_object_is_ok_span():
     assert tracer.spans[0].status == {"code": 1}  # OK, not ERROR
 
 
-async def test_with_span_error_status_on_raise():
+async def test_with_span_error_status_on_raise(monkeypatch):
+    import paybot_sdk.telemetry as tel
+
+    monkeypatch.setattr(tel, "_OTEL", False)
     tracer = FakeTracer()
     cfg = TelemetryConfig(tracer=tracer)
 

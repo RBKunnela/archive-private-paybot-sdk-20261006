@@ -1,11 +1,9 @@
 """paybot-sdk Python port — entry module.
 
-Mirrors the TS `src/index.ts` exports. The runtime is shipped: EIP-3009 signing
-in `PayBotClient.pay()` (via the `signing` extra) and `verify_webhook_signature`
-are both available. v0.2.0 adds the full x402 v2 protocol layer (dual-mode
-signing, AP2 adapter, MPP seam), the 8-class error taxonomy, the multi-token
-registry (USDC + EURC), telemetry hooks, idempotency, the multi-bot client pool,
-the framework middleware, and the static auth helpers (`signup`/`login`).
+Mirrors the TS ``src/index.ts`` exports. Brings the Python SDK to feature-parity
+with the TypeScript SDK: EIP-3009 signing, webhooks, the x402 v2 handler, the
+error taxonomy, idempotency + refund, a multi-token registry, the multi-bot client
+pool, the micropayment batching engine, opt-in telemetry, and the AP2 / MPP seams.
 """
 from .ap2 import (
     Ap2Adapter,
@@ -22,7 +20,6 @@ from .client_pool import (
     PoolBotStats,
 )
 from .errors import (
-    POLICY_ERROR_CODES,
     PayBotApiError,
     PayBotAuthError,
     PayBotError,
@@ -31,9 +28,11 @@ from .errors import (
     PayBotSettlementError,
     PayBotSignatureError,
     PayBotTimeoutError,
+    PayBotUnsupportedSigningMethodError,
     get_error_message,
     map_http_error,
 )
+from .micropayment_engine import MicropaymentEngine
 from .middleware import (
     Paybot402Config,
     Paybot402Middleware,
@@ -50,6 +49,7 @@ from .networks import (
     EIP712_DOMAINS,
     NETWORKS,
     TOKENS,
+    USDC_CONFIG,
     Caip2,
     NetworkConfig,
     TokenConfig,
@@ -64,18 +64,15 @@ from .networks import (
     resolve_token_address,
 )
 from .receipts import canonicalize, receipt_signing_payload, sign_receipt, verify_receipt
-from .telemetry import (
-    PayBotSpan,
-    PayBotTracer,
-    TelemetryConfig,
-    with_span,
-)
+from .telemetry import PayBotSpan, PayBotTracer, TelemetryConfig, with_span
 from .webhook import verify_webhook_signature
-from .x402 import X402Handler
+from .x402_v2 import X402Handler
 from .types import (
     ApiKeyListItem,
     ApiKeyResult,
     BalanceResult,
+    BatchedSettlement,
+    BatchStatistics,
     CommissionEntry,
     CommissionLedgerFilter,
     CommissionStatus,
@@ -84,26 +81,28 @@ from .types import (
     LimitsConfig,
     LoginResult,
     MerchantInfo,
+    MicropaymentQueueItem,
     OperatorRef,
     PayBotConfig,
     PaymentIntent,
     PaymentMetadata,
     PaymentPayload,
-    PaymentProtocol,
     PaymentRequest,
     PaymentRequiredResponse,
     PaymentRequirements,
     PaymentResponseConfirmation,
     PaymentResult,
     PaymentScheme,
+    Receipt,
     ReceiptAgent,
     ReceiptArtifact,
     ReceiptCapability,
     ReceiptReputationPointer,
     ReceiptSettlement,
     ReceiptSignerRole,
-    Receipt,
+    RefundResult,
     RegisterResult,
+    SettlementOptions,
     SignedPayment,
     SignedReceipt,
     SignupResult,
@@ -112,12 +111,44 @@ from .types import (
     UnsignedReceipt,
 )
 
-__version__ = "0.2.0"  # x402 v2 parity bundle
+__version__ = "0.2.0"  # parity release: x402 v2, taxonomy, pool, engine, AP2/MPP
 
 __all__ = [
+    # client + pool
     "PayBotClient",
+    "PayBotClientPool",
+    "PayBotClientPoolConfig",
+    "PoolBotOptions",
+    "PoolBotStats",
+    # x402 v2 + engines
+    "X402Handler",
+    "MicropaymentEngine",
+    # framework middleware (from main)
+    "Paybot402Config",
+    "Paybot402Middleware",
+    "paybot_402_dependency",
+    # AP2 + MPP
+    "Ap2Adapter",
+    "Ap2PaymentMandate",
+    "Ap2SettleOptions",
+    "ap2_mandate_to_payment_requirements",
+    "is_ap2_mandate",
+    "MppAdapter",
+    "MppCapability",
+    "create_mpp_seam",
+    "detect_mpp_capability",
+    # webhooks + receipts
     "verify_webhook_signature",
-    # errors
+    "canonicalize",
+    "receipt_signing_payload",
+    "sign_receipt",
+    "verify_receipt",
+    # telemetry
+    "PayBotSpan",
+    "PayBotTracer",
+    "TelemetryConfig",
+    "with_span",
+    # errors taxonomy
     "PayBotError",
     "PayBotApiError",
     "PayBotNetworkError",
@@ -126,72 +157,48 @@ __all__ = [
     "PayBotPolicyError",
     "PayBotSignatureError",
     "PayBotSettlementError",
-    "POLICY_ERROR_CODES",
-    "map_http_error",
+    "PayBotUnsupportedSigningMethodError",
     "get_error_message",
-    # receipts
-    "canonicalize",
-    "receipt_signing_payload",
-    "sign_receipt",
-    "verify_receipt",
+    "map_http_error",
     # networks + tokens
     "NETWORKS",
     "NetworkConfig",
+    "Caip2",
+    "TokenConfig",
+    "TOKENS",
+    "USDC_CONFIG",
     "EIP712_DOMAINS",
     "EIP3009_TYPES",
-    "TOKENS",
-    "TokenConfig",
-    "Caip2",
+    "get_network",
+    "get_supported_networks",
+    "parse_caip2",
+    "is_supported_caip2",
     "get_token",
     "get_token_address",
     "resolve_token_address",
     "get_supported_tokens",
     "get_eip712_domain",
-    "get_network",
-    "get_supported_networks",
-    "parse_caip2",
-    "is_supported_caip2",
-    # x402 v2
-    "X402Handler",
-    "Ap2Adapter",
-    "Ap2PaymentMandate",
-    "Ap2SettleOptions",
-    "ap2_mandate_to_payment_requirements",
-    "is_ap2_mandate",
-    "detect_mpp_capability",
-    "create_mpp_seam",
-    "MppCapability",
-    "MppAdapter",
-    # telemetry
-    "PayBotTracer",
-    "PayBotSpan",
-    "TelemetryConfig",
-    "with_span",
-    # client pool
-    "PayBotClientPool",
-    "PayBotClientPoolConfig",
-    "PoolBotOptions",
-    "PoolBotStats",
-    # middleware
-    "Paybot402Config",
-    "Paybot402Middleware",
-    "paybot_402_dependency",
     # config + payment types
     "PayBotConfig",
     "PaymentRequest",
     "PaymentResult",
-    "PaymentProtocol",
+    "RefundResult",
     "PaymentScheme",
     "PaymentRequirements",
-    "MerchantInfo",
-    "PaymentMetadata",
     "PaymentIntent",
     "PaymentPayload",
     "PaymentRequiredResponse",
     "SignedPayment",
     "Receipt",
     "PaymentResponseConfirmation",
-    # receipt types
+    "MerchantInfo",
+    "PaymentMetadata",
+    # micropayment types
+    "MicropaymentQueueItem",
+    "BatchedSettlement",
+    "BatchStatistics",
+    "SettlementOptions",
+    # receipts types
     "ReceiptSignerRole",
     "ReceiptAgent",
     "ReceiptCapability",
@@ -200,7 +207,7 @@ __all__ = [
     "ReceiptReputationPointer",
     "UnsignedReceipt",
     "SignedReceipt",
-    # misc result types
+    # account + commission + auth
     "BalanceResult",
     "TransactionHistoryItem",
     "LimitsConfig",

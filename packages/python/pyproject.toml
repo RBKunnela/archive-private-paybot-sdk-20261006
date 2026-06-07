@@ -44,19 +44,28 @@ web = [
     # no third-party import. FastAPI is lazy-imported, so it is NOT a hard dep.
     "fastapi>=0.110",
 ]
+otel = [
+    # Optional: when installed, telemetry spans carry real OpenTelemetry Status
+    # objects instead of the dict fallback shape. Only the API package is needed.
+    "opentelemetry-api>=1.20",
+]
 dev = [
-    # Convenience aggregate: signing + web + test in one extra for contributors.
+    # Convenience aggregate: signing + web + test + lint in one extra for
+    # contributors and the `python-tests` CI job (which runs `uv run ruff`).
     "eth-account>=0.13,<1.0",
     "eth-typing>=6.0.0,<7",
     "fastapi>=0.110",
+    "opentelemetry-api>=1.20",
     "pytest>=8",
     "pytest-asyncio>=1.4.0",
     "respx>=0.21",
+    "ruff>=0.11,<0.12",
 ]
 test = [
     "pytest>=8",
     "pytest-asyncio>=1.4.0",
     "respx>=0.21",  # httpx mock for the test suite
+    "opentelemetry-api>=1.20",  # exercises the real-OTel status path in tests
 ]
 
 [project.urls]

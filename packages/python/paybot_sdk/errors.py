@@ -1,21 +1,18 @@
 """PayBot error taxonomy. Mirrors ``src/errors.ts``.
 
-Hierarchy (all subclasses of :class:`PayBotApiError` stay ``isinstance``
-``PayBotApiError`` for back-compat)::
+Hierarchy (every concrete subclass stays ``isinstance(e, PayBotApiError)`` for
+back-compat — existing code that catches ``PayBotApiError`` keeps working)::
 
     Exception
-     └─ PayBotError          (abstract root: code + optional details)
-         └─ PayBotApiError   (message, code, status_code, details?)  <- back-compat anchor
-             ├─ PayBotNetworkError     (connection/DNS/refused)
-             ├─ PayBotTimeoutError     (request timeout)
-             ├─ PayBotAuthError        (401/403)
-             ├─ PayBotPolicyError      (trust/AML/limit)
-             ├─ PayBotSignatureError   (EIP-3009/EIP-712 signing)
-             └─ PayBotSettlementError  (chain rejected the tx)
-
-The Python port keeps the existing ``PayBotApiError(message, code, status_code,
-details=None)`` positional signature unchanged so the ~96 existing call sites in
-``client.py`` keep working. The 7 new subclasses are additive.
+     └─ PayBotError              (abstract root: code + optional details)
+         └─ PayBotApiError       (message, code, status_code, details?)  ← back-compat anchor
+             ├─ PayBotNetworkError              (connection/DNS/refused)
+             ├─ PayBotTimeoutError              (request timeout)
+             ├─ PayBotAuthError                 (401/403)
+             ├─ PayBotPolicyError               (trust/AML/limit)
+             ├─ PayBotSignatureError            (EIP-3009/EIP-712 signing)
+             ├─ PayBotSettlementError           (chain rejected the tx)
+             └─ PayBotUnsupportedSigningMethodError  (token signing method unsupported)
 """
 from __future__ import annotations
 
@@ -27,15 +24,12 @@ class PayBotError(Exception):
 
     Carries a machine-readable :attr:`code` and optional structured
     :attr:`details`. Not raised directly — concrete subclasses extend
-    :class:`PayBotApiError`. Mirrors the TS ``PayBotError`` (errors.ts:27-39).
+    :class:`PayBotApiError`.
 
     :param message: Human-readable error message.
     :param code: Machine-readable error code (e.g. ``'NETWORK_ERROR'``).
     :param details: Optional structured error context.
     """
-
-    code: str
-    details: Optional[Dict[str, Any]]
 
     def __init__(
         self,
@@ -49,19 +43,17 @@ class PayBotError(Exception):
 
 
 class PayBotApiError(PayBotError):
-    """SDK-facing error raised by PayBotClient methods on non-2xx responses.
+    """SDK-facing error raised by PayBotClient methods on non-2xx HTTP responses.
 
-    The back-compat anchor: every specialized subtype extends this class, so
+    Back-compat anchor: every specialized subtype extends this class, so
     ``isinstance(e, PayBotApiError)`` and reads of ``.code`` / ``.status_code`` /
-    ``.details`` keep working unchanged. Mirrors errors.ts:53-66.
+    ``.details`` keep working unchanged.
 
     :param message: Human-readable error message.
     :param code: Machine-readable error code.
     :param status_code: HTTP status code (0 for transport-level errors).
     :param details: Optional structured error context.
     """
-
-    status_code: int
 
     def __init__(
         self,
@@ -75,9 +67,12 @@ class PayBotApiError(PayBotError):
 
 
 class PayBotNetworkError(PayBotApiError):
-    """Connection-level failure (DNS, connection refused, socket reset).
+    """Connection-level failure (DNS resolution, connection refused, socket reset).
 
-    Mirrors errors.ts:76. Defaults: ``code='NETWORK_ERROR'``, ``status_code=0``.
+    :param message: Human-readable error message.
+    :param code: Machine-readable code (default ``'NETWORK_ERROR'``).
+    :param status_code: HTTP status (default ``0`` — no response received).
+    :param details: Optional structured error context.
     """
 
     def __init__(
@@ -93,7 +88,10 @@ class PayBotNetworkError(PayBotApiError):
 class PayBotTimeoutError(PayBotApiError):
     """Request exceeded the configured timeout and was aborted.
 
-    Mirrors errors.ts:96. Defaults: ``code='TIMEOUT'``, ``status_code=0``.
+    :param message: Human-readable error message.
+    :param code: Machine-readable code (default ``'TIMEOUT'``).
+    :param status_code: HTTP status (default ``0`` — request never completed).
+    :param details: Optional structured error context.
     """
 
     def __init__(
@@ -109,8 +107,10 @@ class PayBotTimeoutError(PayBotApiError):
 class PayBotAuthError(PayBotApiError):
     """Authentication / authorization failure (HTTP 401 or 403).
 
-    Mirrors errors.ts:116. Defaults: ``code='AUTHENTICATION_FAILED'``,
-    ``status_code=401``.
+    :param message: Human-readable error message.
+    :param code: Machine-readable code (default ``'AUTHENTICATION_FAILED'``).
+    :param status_code: HTTP status (default ``401``).
+    :param details: Optional structured error context.
     """
 
     def __init__(
@@ -124,11 +124,13 @@ class PayBotAuthError(PayBotApiError):
 
 
 class PayBotPolicyError(PayBotApiError):
-    """Policy rejection — trust violation, AML block, spending limit, envelope.
+    """Policy rejection — trust violation, AML block, spending limit, or envelope
+    breach. The server-provided ``code`` is preserved (e.g. ``'TRUST_VIOLATION'``).
 
-    The server-provided ``code`` is preserved (e.g. ``'TRUST_VIOLATION'``).
-    Mirrors errors.ts:137. Defaults: ``code='POLICY_VIOLATION'``,
-    ``status_code=403``.
+    :param message: Human-readable error message.
+    :param code: Server policy code (preserved; default ``'POLICY_VIOLATION'``).
+    :param status_code: HTTP status (default ``403``).
+    :param details: Optional structured error context.
     """
 
     def __init__(
@@ -142,10 +144,12 @@ class PayBotPolicyError(PayBotApiError):
 
 
 class PayBotSignatureError(PayBotApiError):
-    """EIP-3009 / EIP-712 signing failed (bad key, malformed domain, signer).
+    """EIP-3009 / EIP-712 signing failed (bad key, malformed domain, signer error).
 
-    Mirrors errors.ts:157. Defaults: ``code='SIGNATURE_FAILED'``,
-    ``status_code=0`` (failure is local, pre-network).
+    :param message: Human-readable error message.
+    :param code: Machine-readable code (default ``'SIGNATURE_FAILED'``).
+    :param status_code: HTTP status (default ``0`` — failure is local, pre-network).
+    :param details: Optional structured error context.
     """
 
     def __init__(
@@ -161,8 +165,10 @@ class PayBotSignatureError(PayBotApiError):
 class PayBotSettlementError(PayBotApiError):
     """On-chain settlement failure — the chain rejected the transaction.
 
-    Mirrors errors.ts:177. Defaults: ``code='SETTLEMENT_FAILED'``,
-    ``status_code=502``.
+    :param message: Human-readable error message.
+    :param code: Machine-readable code (default ``'SETTLEMENT_FAILED'``).
+    :param status_code: HTTP status (default ``502``).
+    :param details: Optional structured error context.
     """
 
     def __init__(
@@ -175,7 +181,31 @@ class PayBotSettlementError(PayBotApiError):
         super().__init__(message, code, status_code, details)
 
 
-#: Server policy codes that map to :class:`PayBotPolicyError` (errors.ts:194-199).
+class PayBotUnsupportedSigningMethodError(PayBotApiError):
+    """The token's configured signing method is not implemented by this SDK.
+
+    Raised when a token in the registry declares a ``signing_method`` that the
+    Python SDK does not implement (e.g. ``'eip2612'`` permit-style tokens such as
+    RLUSD/DAI — documented as a deliberate rejection until EIP-2612 support lands).
+
+    :param message: Human-readable error message.
+    :param code: Machine-readable code (default ``'UNSUPPORTED_SIGNING_METHOD'``).
+    :param status_code: HTTP status (default ``400`` — caller-side configuration).
+    :param details: Optional structured error context.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "UNSUPPORTED_SIGNING_METHOD",
+        status_code: int = 400,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message, code, status_code, details)
+
+
+# Server policy codes that map to :class:`PayBotPolicyError`. Exported so the
+# client and tests share a single source of truth (mirrors POLICY_ERROR_CODES).
 POLICY_ERROR_CODES: FrozenSet[str] = frozenset(
     {
         "TRUST_VIOLATION",
@@ -192,28 +222,27 @@ def map_http_error(
     status_code: int,
     details: Optional[Dict[str, Any]] = None,
 ) -> PayBotApiError:
-    """Construct the most specific :class:`PayBotApiError` subclass for an HTTP error.
+    """Construct the most specific :class:`PayBotApiError` subclass for an HTTP
+    error response, based on status code and server-provided error code.
 
-    Mapping (mirrors errors.ts:221-234):
+    Mapping (mirrors ``mapHttpError`` in errors.ts):
 
-    - policy codes (see :data:`POLICY_ERROR_CODES`) -> :class:`PayBotPolicyError`
-    - 401/403 -> :class:`PayBotAuthError`
-    - everything else -> :class:`PayBotApiError`
-
-    Policy codes take precedence over the 403 status check so a
-    ``TRUST_VIOLATION`` at 403 maps to :class:`PayBotPolicyError`, not
-    :class:`PayBotAuthError`.
+    - policy codes (see :data:`POLICY_ERROR_CODES`) → :class:`PayBotPolicyError`
+    - 401/403 → :class:`PayBotAuthError`
+    - everything else → :class:`PayBotApiError`
 
     :param message: Human-readable error message.
     :param code: Server-provided machine-readable code.
     :param status_code: HTTP status code.
     :param details: Optional structured error context.
-    :returns: The most specific matching error instance (always
-        ``isinstance(..., PayBotApiError)``).
+    :returns: The most specific matching error instance (always an instance of
+        :class:`PayBotApiError`).
 
     :example:
-        >>> err = map_http_error("Trust violation", "TRUST_VIOLATION", 403)
-        >>> isinstance(err, PayBotPolicyError)
+        >>> e = map_http_error("Trust violation", "TRUST_VIOLATION", 403)
+        >>> isinstance(e, PayBotPolicyError)
+        True
+        >>> isinstance(e, PayBotApiError)
         True
     """
     if code in POLICY_ERROR_CODES:
@@ -224,7 +253,11 @@ def map_http_error(
 
 
 def get_error_message(error: Any) -> str:
-    """Extract a string message from any exception-like value (errors.ts:239)."""
+    """Extract a string message from any exception-like value.
+
+    :param error: The thrown value (exception, string, or anything).
+    :returns: A best-effort message string.
+    """
     if isinstance(error, BaseException):
         return str(error) or error.__class__.__name__
     if isinstance(error, str):

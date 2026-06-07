@@ -2,10 +2,13 @@
 
 Python port of `paybot-sdk`. Mirror of the TypeScript SDK in `../../src/`.
 
-> **Status: runtime (0.1.0).** Type surface, network config, HTTP transport, all
-> client REST methods, EIP-3009 signing (`PayBotClient.pay()` real-mode path),
-> and webhook signature verification are implemented and tested. The signed
-> payload and the webhook signature are byte-for-byte compatible with the TS SDK.
+> **Status: feature-parity (0.2.0).** Brings the Python SDK to parity with the
+> TypeScript SDK: type surface, network + multi-token registry, HTTP transport,
+> all client REST methods, the full error taxonomy, idempotency + `refund()`,
+> EIP-3009 signing, the x402 v2 handler (`X402Handler`), the multi-bot client
+> pool, the micropayment batching engine, opt-in telemetry, the AP2 → x402
+> settlement adapter, the MPP capability seam, and webhook verification. Signed
+> payloads and webhook signatures are byte-for-byte compatible with the TS SDK.
 
 ## Install
 
@@ -13,7 +16,8 @@ Python port of `paybot-sdk`. Mirror of the TypeScript SDK in `../../src/`.
 pip install paybot-sdk
 ```
 
-Or with the signing extras (required for `pay()` in real mode):
+Or with the signing extras (required for `pay()`, `X402Handler` signing, and the
+micropayment engine in real mode):
 
 ```bash
 pip install paybot-sdk[signing]
@@ -37,30 +41,43 @@ async def main():
 asyncio.run(main())
 ```
 
-## What's implemented
+## Parity table (TS module → Python module)
 
-| File | Mirror of TS | Status |
+| TS module | Python module | Status |
 |---|---|---|
-| `paybot_sdk/types.py` | `src/types.ts` | ✅ Full type surface as `@dataclass` |
-| `paybot_sdk/networks.py` | `src/networks.ts` | ✅ Full (chain IDs, USDC addresses, EIP-712 domains, EIP-3009 types) |
-| `paybot_sdk/errors.py` | `src/errors.ts` | ✅ Full (`PayBotApiError`, `get_error_message`) |
-| `paybot_sdk/crypto.py` | `src/crypto.ts` | ✅ Full (`generate_eip3009_nonce` via `secrets.token_hex`) |
-| `paybot_sdk/client.py` | `src/client.ts` | ✅ Full — all REST methods + real-mode EIP-3009 signing in `_sign_payload()` |
-| `paybot_sdk/webhook.py` | `src/webhook.ts` | ✅ Full (`verify_webhook_signature`, HMAC-SHA256, replay guard) |
-| `paybot_sdk/__init__.py` | `src/index.ts` | ✅ Full exports |
-| `paybot_sdk/middleware.py` | `src/middleware.ts` | ❌ Not yet ported |
-| `paybot_sdk/x402_handler.py` | `src/x402-handler.ts` | ❌ Not yet ported |
+| `src/types.ts` | `paybot_sdk/types.py` | ✅ Full type surface as `@dataclass` (incl. x402 v2, micropayment, refund types) |
+| `src/networks.ts` | `paybot_sdk/networks.py` | ✅ Full — `NETWORKS`, `TOKENS` (USDC/EURC/PYUSD/RLUSD/DAI) with `signing_method` + `eip712_version`, `get_eip712_domain`, `resolve_token_address`, CAIP-2 helpers |
+| `src/errors.ts` | `paybot_sdk/errors.py` | ✅ Full taxonomy — `PayBotError` → `PayBotApiError` → network/timeout/auth/policy/signature/settlement/unsupported-signing, `map_http_error` |
+| `src/crypto.ts` | `paybot_sdk/crypto.py` | ✅ Full (`generate_eip3009_nonce`) |
+| `src/client.ts` | `paybot_sdk/client.py` | ✅ Full — REST methods, EIP-3009 signing, multi-token resolution, idempotency LRU, `refund()`, telemetry hooks |
+| `src/client-pool.ts` | `paybot_sdk/client_pool.py` | ✅ `PayBotClientPool` — per-bot signing, shared treasury (`TREASURY_EXCEEDED`), `pay_as` |
+| `src/x402-v2.ts` | `paybot_sdk/x402_v2.py` | ✅ `X402Handler` — 402 parse, x402/MPP/dual signing, `upto` scheme + capture validation, PAYMENT-SIGNATURE/RESPONSE headers, submit/verify |
+| `src/telemetry.ts` | `paybot_sdk/telemetry.py` | ✅ Opt-in `PayBotTracer`/`PayBotSpan` protocols + `with_span`, no OTel dependency |
+| `src/micropayment-engine.ts` | `paybot_sdk/micropayment_engine.py` | ✅ `MicropaymentEngine` — queue, thresholds, signed batch, stats |
+| `src/ap2.ts` | `paybot_sdk/ap2.py` | ✅ `Ap2Adapter` (does NOT verify the AP2 VC signature — documented trust boundary) |
+| `src/mpp-seam.ts` | `paybot_sdk/mpp_seam.py` | ✅ `detect_mpp_capability` + `create_mpp_seam` (`settle` raises `MPP_NOT_IMPLEMENTED` — full MPP deferred to GA) |
+| `src/webhook.ts` | `paybot_sdk/webhook.py` | ✅ Full (`verify_webhook_signature`, HMAC-SHA256, replay guard) |
+| `src/index.ts` | `paybot_sdk/__init__.py` | ✅ Full exports |
+| `src/middleware.ts` | — | ❌ Not ported (see below) |
+| `src/x402-handler.ts` | — | ⚠️ Not ported as a separate module — its surface is subsumed by `X402Handler` in `x402_v2.py` |
 
-**Working today:**
-`register()`, `balance()`, `history()`, `set_limits()`, `health()`,
-`commission_summary()`, `commission_ledger()`, `create_api_key()`,
-`list_api_keys()`, `revoke_api_key()`, real-mode `pay()` (EIP-3009 signing),
-and `verify_webhook_signature()`. Mock mode (no `wallet_private_key`) and real
-mode both mirror the TS SDK wire contract.
+**Still unported (honest gaps):**
 
-**Not yet ported:**
-- `middleware.py`
-- `x402_handler.py`
+- **`src/middleware.ts`** — an **Express-style** HTTP middleware (`paybot402`).
+  There is no direct Python equivalent because it is bound to the Express
+  request/response model. The natural Python analogue is a **FastAPI/Starlette
+  dependency** (or an ASGI middleware) — a clean follow-up, but a different
+  shape, so it is deliberately left out of this parity pass rather than ported
+  as a non-idiomatic line-for-line copy.
+- **`src/x402-handler.ts`** — the older, thin handler. Its capability is covered
+  by the full `X402Handler` in `x402_v2.py`; a separate thin module would be
+  redundant.
+
+> **eip2612 tokens (RLUSD, DAI):** present in the `TOKENS` registry for discovery
+> with `signing_method="eip2612"`, but signing them is a **documented rejection** —
+> the SDK implements EIP-3009 (`TransferWithAuthorization`) only. Use
+> `PayBotUnsupportedSigningMethodError` as the typed boundary when wiring permit
+> support later.
 
 ## Webhook verification
 
@@ -102,12 +119,20 @@ pip install -e ".[signing,test]"
 pytest
 ```
 
-The test suite (in `tests/`) covers:
-- Type surface (every dataclass constructable from valid inputs)
-- `PayBotClient.__init__` validation (api_key required, bot_id required, facilitator_url URL, wallet_private_key 0x-prefix)
-- `_to_base_units` corner cases (zero, no decimal, exact decimal, more decimals than scale)
-- `generate_eip3009_nonce` shape (0x-prefixed, 66 chars)
-- `NETWORKS` parity with `src/networks.ts` (chain IDs, USDC addresses)
-- EIP-3009 signing (`test_signing.py`): TS wire shape, signer-address recovery round-trip, unsupported-network + missing-key errors, deterministic-given-nonce structure
-- Real-mode `pay()` verify→settle flow (respx-mocked HTTP)
-- Webhook verification (`test_webhook.py`): valid/tampered/expired/future/malformed-header cases + the `f"{t}.{payload}"` cross-language signing contract
+The test suite (in `tests/`) covers, per module:
+- `test_scaffold.py` / `test_signing.py` — type surface, `__init__` validation,
+  `_to_base_units`, nonce shape, `NETWORKS` parity, EIP-3009 signing + recovery
+- `test_webhook.py` — valid/tampered/expired/future/malformed-header cases
+- `test_errors_taxonomy.py` — the full error hierarchy + `map_http_error` dispatch
+- `test_tokens.py` — multi-token registry, EIP-712 domain resolution, the EURC
+  mainnet open-core boundary, and `pay({token})` integration
+- `test_telemetry.py` — no-op path, span lifecycle (OK/ERROR), attribute attach
+- `test_x402_v2.py` — 402 parsing, x402/MPP/dual dispatch (signature recovery),
+  `upto` scheme + overcharge, header encode/decode, submit/verify
+- `test_client_pool.py` — add/get/remove, per-bot signing isolation, shared
+  treasury (`TREASURY_EXCEEDED` pre-network block), `pay_as`
+- `test_micropayment_engine.py` — queue, batch signing (recovery), stats, gas
+- `test_ap2.py` — mandate translation, validation/expiry, settlement wiring
+- `test_mpp_seam.py` — detection + the `MPP_NOT_IMPLEMENTED` dead-end
+- `test_idempotency.py` — pay()/register() caching + LRU internals
+- `test_refund.py` — `refund()` success/failure (never raises)

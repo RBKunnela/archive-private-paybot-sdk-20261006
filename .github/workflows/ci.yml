@@ -67,6 +67,33 @@ jobs:
       - name: Build
         run: npm run build
 
+  # Post-mortem correction (PR #70): the Python SDK suite previously NEVER ran
+  # in CI — a 27-test regression rode a green build because only the Node tests
+  # gated PRs. This job makes the Python suite a first-class PR gate alongside
+  # build. Context name `python-tests` is stable for branch protection.
+  python-tests:
+    name: python-tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/python
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Install dependencies (all extras)
+        run: uv sync --all-extras
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Run Python tests
+        run: uv run pytest
+
   # Publishing lives in release.yml (triggered on a published GitHub Release),
   # NOT here. CI on push/PR runs build + tests + security only, so an ordinary
   # green commit means "merged & safe" without carrying a publish status that

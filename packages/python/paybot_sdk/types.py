@@ -9,17 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover - typing-only import, avoids a runtime cycle
     from .telemetry import TelemetryConfig
 
 
 CommissionStatus = Literal["pending", "forwarded", "deferred"]
+# x402 payment scheme. ``upto`` is x402 v2 metered/streaming billing — the payer
+# signs for the MAX amount, authorizing capture UP TO that max.
+PaymentScheme = Literal["exact", "max", "range", "upto"]
+PaymentProtocol = Literal["x402", "mpp", "dual"]
 TrustLevel = Literal[0, 1, 2, 3, 4, 5]
 ReceiptSignerRole = Literal["facilitator", "payer"]
-
-# x402 v2 protocol enums (mirrors types.ts:126, 151).
-PaymentProtocol = Literal["x402", "mpp", "dual"]
-PaymentScheme = Literal["exact", "max", "range", "upto"]
 
 
 @dataclass
@@ -33,34 +33,40 @@ class PayBotConfig:
     wallet_private_key: Optional[str] = None  # hex with 0x prefix
     max_retries: int = 1
     timeout_ms: int = 30_000
-    # Optional operator-supplied token contract addresses, keyed
-    # ``token_symbol -> caip2_network -> address`` (e.g.
-    # ``{"EURC": {"eip155:8453": "0x..."}}``). The public open-core registry
-    # (``TOKENS``) ships only addresses that are safe to distribute (e.g. testnet
-    # deployments). Mainnet addresses for regulated tokens are NOT hardcoded in the
-    # public SDK — the operator injects them here at runtime. During payment the
-    # SDK resolves a token address as: explicit ``PaymentRequest.token_contract`` ->
-    # this override map -> the public registry -> otherwise a
-    # ``TOKEN_ADDRESS_NOT_CONFIGURED`` failure. Mirrors
-    # ``PayBotConfig.tokenAddressOverrides`` in ``src/types.ts``.
+    # Operator-supplied token contract addresses, keyed
+    # ``token_symbol → caip2_network → address``. The public open-core registry
+    # ships only safe-to-distribute addresses (testnet); mainnet addresses for
+    # regulated tokens are injected here at runtime. Resolution precedence during
+    # pay(): explicit ``PaymentRequest.token_contract`` → this map → public
+    # registry → otherwise a ``TOKEN_ADDRESS_NOT_CONFIGURED`` failure.
     token_address_overrides: Optional[Dict[str, Dict[str, str]]] = None
-    # Optional, opt-in OpenTelemetry tracing. When omitted, telemetry is a
-    # complete no-op with zero overhead (types.ts:28).
+    # Optional, opt-in tracer. Inject any object structurally matching
+    # ``paybot_sdk.telemetry.PayBotTracer``. When ``None``, telemetry is a
+    # complete no-op with zero overhead and no OpenTelemetry dependency.
     telemetry: Optional["TelemetryConfig"] = None
 
 
 @dataclass
 class PaymentRequest:
     resource: str
-    amount: str  # human-readable USDC, e.g. "0.05"
+    # Human-readable decimal amount in the token's own units, e.g. "0.05".
+    # Token-agnostic: for USDC this is USD, for EURC it is EUR, etc. The token
+    # is selected by `token` (default "USDC") and its decimals drive base-unit
+    # conversion (CodeRabbit #13).
+    amount: str
     pay_to: str
     token_contract: Optional[str] = None
-    network: Optional[str] = None  # CAIP-2 id, default eip155:84532
     # Token ticker symbol to pay with (e.g. "USDC", "EURC"). Default "USDC".
-    # Unknown symbol -> PaymentResult success:false code UNSUPPORTED_TOKEN (types.ts:48).
+    # Resolves the token's address-on-network for the asset field, uses its
+    # decimals for base-unit conversion, and signs against its token-specific
+    # EIP-712 domain. An explicit token_contract still overrides the resolved
+    # address. Unknown symbol → PaymentResult success=False, UNSUPPORTED_TOKEN.
     token: Optional[str] = None
-    # Optional idempotency key. When set, pay() sends X-Idempotency-Key and
-    # caches the successful result per PayBotClient instance (types.ts:57).
+    network: Optional[str] = None  # CAIP-2 id, default eip155:84532
+    # Optional idempotency key. When provided, the SDK sends an
+    # X-Idempotency-Key header and caches the successful result per client
+    # instance: a repeat pay() with the same key returns the cached result
+    # without a second network round-trip.
     idempotency_key: Optional[str] = None
 
 
@@ -267,27 +273,31 @@ class CommissionEntry:
     forwarded_at: Optional[str] = None
 
 
-# ===== x402 v2 Protocol Types (mirrors types.ts:117-286) =====
+# --- Refund types ---
 
 
 @dataclass
-class PaymentRequirements:
-    """Payment requirements negotiated between agent and merchant (types.ts:156-179)."""
+class RefundResult:
+    """Result of a refund request. Returned by ``PayBotClient.refund`` which never
+    raises — failures surface as ``success=False`` with an ``error``/``error_code``.
+    """
 
-    scheme: PaymentScheme
-    network: str  # CAIP-2 identifier (e.g. eip155:8453)
-    asset: str  # asset identifier (e.g. eip155:8453/erc20:0x...)
-    amount: str  # base units
-    pay_to: str
-    max_timeout_seconds: int
-    min_amount: Optional[str] = None  # for range scheme
-    max_amount: Optional[str] = None  # for range / upto scheme
-    token: Optional[str] = None  # token ticker; selects EIP-712 domain (default USDC)
+    success: bool
+    refund_id: Optional[str] = None
+    tx_hash: Optional[str] = None
+    amount: Optional[str] = None
+    status: Optional[str] = None  # 'pending' | 'confirmed' | 'failed'
+    error: Optional[str] = None
+    error_code: Optional[str] = None
+    error_details: Optional[Dict[str, Any]] = None
+
+
+# ===== x402 v2 Protocol Types =====
 
 
 @dataclass
 class MerchantInfo:
-    """Merchant information for transparency (types.ts:184)."""
+    """Merchant information for transparency."""
 
     name: str
     url: str
@@ -296,7 +306,7 @@ class MerchantInfo:
 
 @dataclass
 class PaymentMetadata:
-    """Payment metadata (types.ts:196)."""
+    """Payment metadata."""
 
     description: Optional[str] = None
     order_id: Optional[str] = None
@@ -304,11 +314,30 @@ class PaymentMetadata:
 
 
 @dataclass
+class PaymentRequirements:
+    """Payment requirements negotiated between agent and merchant.
+
+    Mirrors ``PaymentRequirements`` in ``src/types.ts``. ``token`` selects the
+    token-specific EIP-712 signing domain (default ``'USDC'``).
+    """
+
+    scheme: PaymentScheme
+    network: str
+    asset: str
+    amount: str
+    pay_to: str
+    max_timeout_seconds: int
+    min_amount: Optional[str] = None
+    max_amount: Optional[str] = None
+    token: Optional[str] = None
+
+
+@dataclass
 class PaymentIntent:
-    """x402 v2 core payment negotiation structure (types.ts:122-139)."""
+    """Payment-Intent — x402 v2 core payment negotiation structure."""
 
     intent_id: str
-    protocol: PaymentProtocol  # x402 (native), mpp (Stripe/Tempo), dual (both)
+    protocol: PaymentProtocol
     requirements: PaymentRequirements
     version: str
     created_at: str
@@ -319,7 +348,7 @@ class PaymentIntent:
 
 @dataclass
 class PaymentPayload:
-    """Payment payload from an HTTP 402 response (types.ts:208)."""
+    """Payment payload parsed from an HTTP 402 response."""
 
     payment_intent: PaymentIntent
     requirements: PaymentRequirements
@@ -329,7 +358,7 @@ class PaymentPayload:
 
 @dataclass
 class PaymentRequiredResponse:
-    """HTTP 402 Payment Required response (types.ts:222)."""
+    """HTTP 402 Payment Required response (input to ``X402Handler.on_402_response``)."""
 
     status: int  # always 402
     headers: Dict[str, str]
@@ -338,37 +367,91 @@ class PaymentRequiredResponse:
 
 @dataclass
 class SignedPayment:
-    """Signed payment ready for submission (types.ts:234)."""
+    """Signed payment ready for submission."""
 
     protocol: PaymentProtocol
     signed_data: Dict[str, Any]
     signature: str
-    timestamp: int  # epoch ms (matches TS Date.now())
+    timestamp: int  # epoch ms
 
 
 @dataclass
 class Receipt:
-    """Payment receipt after successful settlement (types.ts:248).
-
-    ``confirmed_at`` is kept as an ISO-8601 string (NOT a ``datetime``); see the
-    PARITY-SPEC divergence note — Python returns the ISO string to avoid lossy
-    round-trips while TS hands back a ``Date``.
-    """
+    """Payment receipt after a successful settlement."""
 
     receipt_id: str
     status: Literal["pending", "confirmed", "failed"]
     amount: str
     network: str
     transaction_id: Optional[str] = None
-    confirmed_at: Optional[str] = None  # ISO-8601 string
+    confirmed_at: Optional[str] = None
     block_number: Optional[int] = None
     gas_used: Optional[str] = None
 
 
 @dataclass
 class PaymentResponseConfirmation:
-    """Parsed settlement confirmation from a PAYMENT-RESPONSE header (types.ts:279)."""
+    """Parsed settlement confirmation from an x402 v2 ``PAYMENT-RESPONSE`` header."""
 
     receipt_id: str
     status: Literal["pending", "confirmed", "failed"]
     transaction_id: Optional[str] = None
+
+
+# ===== Micropayment Batching Engine Types =====
+
+
+MicropaymentStatus = Literal["queued", "pending", "settled"]
+
+
+@dataclass
+class MicropaymentQueueItem:
+    """Item in the micropayment batching queue."""
+
+    payment_id: str
+    recipient: str
+    amount_usd: str
+    amount_base_units: str  # USDC uses 6 decimals
+    queued_at: int  # epoch ms
+    status: MicropaymentStatus
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class BatchStatistics:
+    """Statistics about the current batching queue."""
+
+    total_payments: int
+    total_usd: float
+    pending_count: int
+    queued_count: int
+    unique_recipients: int
+    payments_by_recipient: Dict[str, int]
+    active_windows: int
+    average_usd_per_payment: float
+    should_settle: bool
+
+
+@dataclass
+class SettlementOptions:
+    """Options for batch settlement."""
+
+    force_settle: bool = False
+    skip_gas_estimate: bool = False
+
+
+@dataclass
+class BatchedSettlement:
+    """Result of batching multiple payments into a single signed settlement."""
+
+    batch_id: str
+    payment_ids: List[str]
+    recipient_count: int
+    total_amount_usd: str
+    total_amount_base_units: str
+    average_amount_usd: str
+    gas_estimate_usd: str
+    gas_per_payment_usd: str
+    signed_settlement: Dict[str, Any]
+    created_at: int
+    expires_at: int
