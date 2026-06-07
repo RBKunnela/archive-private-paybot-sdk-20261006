@@ -340,24 +340,122 @@ export class PayBotClientPool {
    */
   async payAs(botId: string, request: PaymentRequest): Promise<PaymentResult> {
     const client = this.getBot(botId);
-    const amountUsd = parseFloat(request.amount);
 
-    if (this.config.sharedDailyLimitUsd !== undefined && !this.canSpend(amountUsd)) {
-      return {
-        success: false,
-        grossAmount: '0',
-        netAmount: '0',
-        commissionAmount: '0',
-        commissionRate: 0,
-        error: `Shared treasury exceeded: remaining ${this.remainingTreasuryUsd()} USD, requested ${request.amount} USD`,
-        errorCode: 'TREASURY_EXCEEDED',
-      };
+    // Reject nan/inf/unparseable/negative amounts BEFORE any treasury math
+    // (CodeRabbit #3) — they must never be treated as zero-cost and slip past
+    // the treasury gate. parseFloat('nan')/parseFloat('foo') yield NaN, which
+    // canSpend()/recordSpend() previously treated as a 0-cost (always-allowed)
+    // spend, silently bypassing the budget.
+    const amountUsd = parseAmountUsd(request.amount);
+    if (amountUsd === null) {
+      return poolFail(
+        'INVALID_AMOUNT',
+        `Invalid payment amount: ${JSON.stringify(request.amount)}`,
+      );
     }
 
-    const result = await client.pay(request);
+    const bounded = this.config.sharedDailyLimitUsd !== undefined;
+
+    // Reserve synchronously BEFORE the first await (CodeRabbit #4). Node is
+    // single-threaded, so as long as the check + reservation happen with no
+    // intervening await, concurrent payAs() calls cannot interleave between the
+    // limit check and the debit. N callers can therefore no longer each pass the
+    // check and collectively overrun the budget. No lock primitive is needed.
+    if (bounded) {
+      this.rolloverIfNeeded();
+      const remaining = Math.max(
+        0,
+        (this.config.sharedDailyLimitUsd as number) - this.treasurySpentUsd,
+      );
+      if (amountUsd > remaining) {
+        return poolFail(
+          'TREASURY_EXCEEDED',
+          `Shared treasury exceeded: remaining ${remaining} USD, requested ${request.amount} USD`,
+        );
+      }
+      this.treasurySpentUsd += amountUsd; // optimistic reservation
+    }
+
+    let result: PaymentResult;
+    try {
+      result = await client.pay(request);
+    } catch (err) {
+      // Refund the reservation, then re-throw.
+      if (bounded) {
+        this.treasurySpentUsd = Math.max(0, this.treasurySpentUsd - amountUsd);
+      }
+      throw err;
+    }
+
     if (result.success) {
-      this.recordSpend(botId, amountUsd);
+      if (bounded) {
+        // Reservation already debited the treasury; only record per-bot stats
+        // (do NOT double-count the treasury via recordSpend).
+        this.recordBotStat(botId, amountUsd);
+      } else {
+        this.recordSpend(botId, amountUsd);
+      }
+    } else if (bounded) {
+      // Refund the reservation for a logical (success=false) failure.
+      this.treasurySpentUsd = Math.max(0, this.treasurySpentUsd - amountUsd);
     }
     return result;
   }
+
+  /**
+   * Record a committed spend on a bot's local counters only (the treasury was
+   * already debited by the reservation in {@link PayBotClientPool.payAs}).
+   *
+   * @param botId - The spending bot's identifier.
+   * @param amountUsd - The committed amount, in USD (already validated finite/positive).
+   */
+  private recordBotStat(botId: string, amountUsd: number): void {
+    const entry = this.bots.get(botId);
+    if (entry) {
+      entry.dailySpentUsd += amountUsd;
+      entry.dailyTxCount += 1;
+    }
+  }
+}
+
+/**
+ * Build a zeroed failure {@link PaymentResult} for pool-level rejections
+ * (treasury overrun, invalid amount). No network call was made.
+ *
+ * @param errorCode - The machine-readable failure code.
+ * @param error - Human-readable failure message.
+ * @returns A `success: false` {@link PaymentResult}.
+ */
+function poolFail(errorCode: string, error: string): PaymentResult {
+  return {
+    success: false,
+    grossAmount: '0',
+    netAmount: '0',
+    commissionAmount: '0',
+    commissionRate: 0,
+    error,
+    errorCode,
+  };
+}
+
+/**
+ * Parse a payment amount string to a finite, non-negative number.
+ *
+ * Returns `null` for unparseable, non-finite (NaN/Infinity), or negative values
+ * so callers can reject them explicitly instead of silently treating them as
+ * zero-cost (CodeRabbit #3). Unlike bare `parseFloat`, this rejects trailing
+ * garbage (e.g. `'1abc'`) and the literal strings `'nan'`/`'inf'`.
+ *
+ * @param value - The raw amount string from the payment request.
+ * @returns The parsed finite non-negative number, or `null` when invalid.
+ */
+function parseAmountUsd(value: string): number | null {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
 }

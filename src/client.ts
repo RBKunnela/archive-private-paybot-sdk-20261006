@@ -128,6 +128,14 @@ export class PayBotClient {
   private payIdempotencyCache = new LruCache<PaymentResult>(IDEMPOTENCY_CACHE_CAP);
   /** Per-instance LRU of idempotent register() results. */
   private registerIdempotencyCache = new LruCache<RegisterResult>(IDEMPOTENCY_CACHE_CAP);
+  /**
+   * In-flight Promise maps keyed by idempotency key (CodeRabbit #5).
+   * Concurrent callers with the same key share ONE Promise instead of each
+   * issuing a duplicate network call. Entries are evicted on rejection and on a
+   * `success:false` result (coherent with #6 — only a real success is cached).
+   */
+  private payInflight = new Map<string, Promise<PaymentResult>>();
+  private registerInflight = new Map<string, Promise<RegisterResult>>();
 
   constructor(config: PayBotConfig) {
     if (!config.apiKey || typeof config.apiKey !== 'string') {
@@ -271,18 +279,34 @@ export class PayBotClient {
    * Returns a PaymentResult with `success: false` on failure (never throws).
    */
   async pay(request: PaymentRequest): Promise<PaymentResult> {
-    const network = request.network ?? 'eip155:84532';
     const idempotencyKey = request.idempotencyKey;
 
-    // Idempotency: return a previously-cached successful result for the same
-    // key without a second network round-trip. Only success:true results are
-    // cached (see below), so a cache hit is always a real prior success.
-    if (idempotencyKey !== undefined) {
-      const cached = this.payIdempotencyCache.get(idempotencyKey);
-      if (cached !== undefined) {
-        return cached;
-      }
+    // No idempotency key → plain one-shot call.
+    if (idempotencyKey === undefined) {
+      return this._payOnce(request);
     }
+
+    // Idempotency: share an in-flight Promise + cache successful results so a
+    // concurrent or repeat call with the same key short-circuits without a
+    // duplicate network round-trip (CodeRabbit #5/#6). Only success:true results
+    // are cached, so a cache hit is always a real prior success.
+    return this.runIdempotent(
+      idempotencyKey,
+      this.payInflight,
+      this.payIdempotencyCache,
+      () => this._payOnce(request),
+    );
+  }
+
+  /**
+   * Execute a single pay() network round-trip (no idempotency dedup/caching).
+   *
+   * @param request - The payment request.
+   * @returns A PaymentResult; `success:false` on failure (never throws).
+   */
+  private async _payOnce(request: PaymentRequest): Promise<PaymentResult> {
+    const network = request.network ?? 'eip155:84532';
+    const idempotencyKey = request.idempotencyKey;
 
     // Wrap the whole pay() body in the top-level span. A returned failure
     // PaymentResult is reported as an OK span with success=false (nothing was
@@ -469,12 +493,8 @@ export class PayBotClient {
             network: settleData.network as string | undefined,
           };
 
-          // Cache only successful results so a retry with the same key short-
-          // circuits; failures are never cached (the caller may retry to recover).
-          if (idempotencyKey !== undefined) {
-            this.payIdempotencyCache.set(idempotencyKey, result);
-          }
-
+          // Caching is handled by runIdempotent() (only success:true results
+          // are cached); _payOnce intentionally does NOT cache here.
           return result;
         } catch (error: unknown) {
           paySpan?.setAttribute('success', false);
@@ -601,28 +621,90 @@ export class PayBotClient {
    *   network round-trip. Only successful registrations are cached.
    */
   async register(trustLevel?: TrustLevel, idempotencyKey?: string): Promise<RegisterResult> {
-    if (idempotencyKey !== undefined) {
-      const cached = this.registerIdempotencyCache.get(idempotencyKey);
-      if (cached !== undefined) {
-        return cached;
-      }
+    const doRegister = async (): Promise<RegisterResult> =>
+      this._request<RegisterResult>('/bots', {
+        method: 'POST',
+        body: { botId: this.config.botId, trustLevel: trustLevel ?? 1 },
+        headers: idempotencyKey !== undefined
+          ? { 'X-Idempotency-Key': idempotencyKey }
+          : undefined,
+      });
+
+    // No idempotency key → plain one-shot call, no sharing/caching.
+    if (idempotencyKey === undefined) {
+      return doRegister();
     }
 
-    const result = await this._request<RegisterResult>('/bots', {
-      method: 'POST',
-      body: { botId: this.config.botId, trustLevel: trustLevel ?? 1 },
-      headers: idempotencyKey !== undefined
-        ? { 'X-Idempotency-Key': idempotencyKey }
-        : undefined,
+    return this.runIdempotent(
+      idempotencyKey,
+      this.registerInflight,
+      this.registerIdempotencyCache,
+      doRegister,
+    );
+  }
+
+  /**
+   * Run `factory()` at most once per `idempotencyKey` under concurrency.
+   *
+   * Concurrent callers with the same key share ONE in-flight Promise (CodeRabbit
+   * #5): the first caller creates and registers the Promise synchronously
+   * (before any await), so a second caller arriving while the first is still
+   * awaiting joins the same Promise instead of issuing a duplicate network call.
+   * On completion: a result whose `success` is truthy is cached and the in-flight
+   * entry cleared; a rejection OR a `success:false` result evicts the in-flight
+   * entry so a later retry can run again (coherent with #6 — only real successes
+   * are cached/shared long-term).
+   *
+   * @param idempotencyKey - The dedup key.
+   * @param inflight - The per-operation in-flight Promise map.
+   * @param cache - The per-operation success-result LRU cache.
+   * @param factory - Produces the underlying network Promise.
+   * @returns The shared/cached result.
+   */
+  private runIdempotent<T extends { success?: boolean }>(
+    idempotencyKey: string,
+    inflight: Map<string, Promise<T>>,
+    cache: LruCache<T>,
+    factory: () => Promise<T>,
+  ): Promise<T> {
+    // A late-arriving caller may find a cached success placed by a Promise that
+    // already settled — re-check before joining the in-flight Promise.
+    const cached = cache.get(idempotencyKey);
+    if (cached !== undefined) {
+      return Promise.resolve(cached);
+    }
+
+    const existing = inflight.get(idempotencyKey);
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    // Create and register the shared Promise SYNCHRONOUSLY (no await between the
+    // cache/in-flight check above and this set), so concurrent callers cannot
+    // each start a duplicate network call.
+    const promise = (async (): Promise<T> => {
+      const result = await factory();
+      if (result.success) {
+        cache.set(idempotencyKey, result);
+      }
+      return result;
+    })();
+
+    inflight.set(idempotencyKey, promise);
+
+    // Evict the in-flight entry once the Promise settles, whether it resolved
+    // (success or failure) or rejected — never pin a failure for future callers.
+    // Swallow on this bookkeeping chain only; the real result/rejection is still
+    // delivered to callers via the returned `promise`.
+    void promise.finally(() => {
+      if (inflight.get(idempotencyKey) === promise) {
+        inflight.delete(idempotencyKey);
+      }
+    }).catch(() => {
+      /* rejection is surfaced to awaiters of `promise`; ignore here */
     });
 
-    // Only reached on success (_request throws on non-2xx), so caching here
-    // never caches a failure.
-    if (idempotencyKey !== undefined) {
-      this.registerIdempotencyCache.set(idempotencyKey, result);
-    }
-
-    return result;
+    return promise;
   }
 
   /**

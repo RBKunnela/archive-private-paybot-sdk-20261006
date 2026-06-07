@@ -18,6 +18,7 @@ import { describe, it, expect, vi } from 'vitest';
 
 import {
   ap2MandateToPaymentRequirements,
+  deriveMaxTimeoutSeconds,
   isAp2Mandate,
   Ap2Adapter,
   type Ap2PaymentMandate,
@@ -85,6 +86,27 @@ describe('ap2MandateToPaymentRequirements', () => {
     );
     expect(reqs.maxTimeoutSeconds).toBeGreaterThan(0);
     expect(reqs.maxTimeoutSeconds).toBeLessThanOrEqual(600);
+  });
+
+  it('[UNIT] deriveMaxTimeoutSeconds — should NOT fall back for a positive sub-second window (CodeRabbit #1)', () => {
+    // CodeRabbit #1: a positive-but-sub-second window floored to 0 and then fell
+    // back to the 300s default — silently granting far more time than allowed.
+    // Math.ceil must map any positive remaining time to >= 1, never the default.
+    const DEFAULT_MAX_TIMEOUT_SECONDS = 300;
+    const nowMs = 1_000_000;
+    const expiresIso = '1970-01-01T00:16:40.500Z'; // now + 500ms
+    const secs = deriveMaxTimeoutSeconds(expiresIso, nowMs);
+    expect(secs).toBe(1);
+    expect(secs).not.toBe(DEFAULT_MAX_TIMEOUT_SECONDS);
+  });
+
+  it('[UNIT] deriveMaxTimeoutSeconds — should fall back to default for an expired window', () => {
+    const DEFAULT_MAX_TIMEOUT_SECONDS = 300;
+    const nowMs = 1_000_000;
+    const pastIso = '1970-01-01T00:16:39.000Z'; // now - 1s
+    expect(deriveMaxTimeoutSeconds(pastIso, nowMs)).toBe(
+      DEFAULT_MAX_TIMEOUT_SECONDS,
+    );
   });
 
   it('[UNIT] ap2MandateToPaymentRequirements — should throw INVALID_AP2_MANDATE when a required field is missing', () => {

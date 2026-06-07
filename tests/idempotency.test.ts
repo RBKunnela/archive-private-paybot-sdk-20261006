@@ -201,6 +201,125 @@ describe('Idempotency — register()', () => {
     const opts = mockFetch.mock.calls[0][1] as RequestInit;
     expect((opts.headers as Record<string, string>)['X-Idempotency-Key']).toBeUndefined();
   });
+
+  // CodeRabbit #6: a 200 response with success:false is a LOGICAL failure and
+  // must NOT be cached, or a retry with the same key would forever return it.
+  it('does NOT cache an HTTP-200 logical failure (success:false) (CodeRabbit #6)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ success: false, botId: 'bot-1', trustLevel: 1 }),
+    );
+    const first = await client.register(1, 'reg-200-false');
+    expect(first.success).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Retry with the SAME key must hit the network again (not the cache).
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ success: false, botId: 'bot-1', trustLevel: 1 }),
+    );
+    const second = await client.register(1, 'reg-200-false');
+    expect(second.success).toBe(false);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  // CodeRabbit #5: M concurrent register() with the SAME key must collapse to a
+  // single in-flight network call (shared Promise), all callers get one result.
+  it('collapses concurrent same-key register() to ONE network call (CodeRabbit #5)', async () => {
+    let calls = 0;
+    mockFetch.mockImplementation(async () => {
+      calls += 1;
+      // Hold the call open so the other 7 callers join the in-flight Promise.
+      await new Promise((r) => setTimeout(r, 20));
+      return jsonResponse({ success: true, botId: 'bot-1', trustLevel: 1 });
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => client.register(1, 'shared')),
+    );
+    expect(calls).toBe(1); // exactly one network call
+    // All callers share the same single result object.
+    for (const r of results) {
+      expect(r).toBe(results[0]);
+    }
+  });
+
+  // CodeRabbit #5 + #6: a concurrent batch that resolves to success:false must
+  // evict the in-flight entry so a later same-key call can retry and succeed.
+  it('evicts the in-flight entry on a success:false batch, allowing retry (CodeRabbit #5/#6)', async () => {
+    let calls = 0;
+    mockFetch.mockImplementation(async () => {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, 10));
+      // First (shared) call fails logically; subsequent calls succeed.
+      return calls <= 1
+        ? jsonResponse({ success: false, botId: 'bot-1', trustLevel: 1 })
+        : jsonResponse({ success: true, botId: 'bot-1', trustLevel: 1 });
+    });
+
+    const wave = await Promise.all(
+      Array.from({ length: 4 }, () => client.register(1, 'k')),
+    );
+    expect(wave.every((r) => r.success === false)).toBe(true);
+    expect(calls).toBe(1); // first wave shared one call
+
+    const retry = await client.register(1, 'k');
+    expect(retry.success).toBe(true);
+    expect(calls).toBe(2); // retry actually ran again
+  });
+});
+
+describe('Idempotency — pay() concurrency (CodeRabbit #5)', () => {
+  let client: PayBotClient;
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    client = new PayBotClient({
+      apiKey: 'pb_test_key',
+      botId: 'test-bot',
+      facilitatorUrl: 'https://api.test.com',
+      maxRetries: 0,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('collapses concurrent same-key pay() to a single verify+settle round-trip', async () => {
+    // Each pay() does verify (1st fetch) + settle (2nd fetch). With 5 concurrent
+    // same-key calls sharing one in-flight Promise, exactly 2 fetches happen.
+    let verifyCalls = 0;
+    let settleCalls = 0;
+    mockFetch.mockImplementation(async (url: string) => {
+      await new Promise((r) => setTimeout(r, 15)); // hold open for interleaving
+      if (String(url).includes('/settle')) {
+        settleCalls += 1;
+        return jsonResponse({ success: true, transaction: '0xT', network: 'eip155:84532' });
+      }
+      verifyCalls += 1;
+      return jsonResponse({
+        valid: true,
+        settlementToken: 'st',
+        commission: { grossAmount: '51250', netAmount: '50000', commissionAmount: '1250', commissionRate: 0.025 },
+      });
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        client.pay({
+          resource: 'https://api.example.com/data',
+          amount: '0.05',
+          payTo: '0x0000000000000000000000000000000000000001',
+          idempotencyKey: 'pay-shared',
+        }),
+      ),
+    );
+    expect(verifyCalls).toBe(1);
+    expect(settleCalls).toBe(1);
+    expect(results.every((r) => r.success === true)).toBe(true);
+    for (const r of results) {
+      expect(r).toBe(results[0]); // shared single result
+    }
+  });
 });
 
 describe('Idempotency — LRU eviction at cap', () => {

@@ -151,7 +151,10 @@ export class X402Handler {
    * Extract Payment-Intent header from HTTP headers
    */
   private extractPaymentIntentHeader(headers: Record<string, string>): string {
-    const header = headers['Payment-Intent'] || headers['payment-intent'];
+    // Case-insensitive lookup (CodeRabbit #14). The previous two hardcoded
+    // casings ('Payment-Intent' / 'payment-intent') missed valid variants like
+    // 'PAYMENT-INTENT' or 'Payment-intent' that HTTP allows.
+    const header = X402Handler.readHeaderCaseInsensitive(headers, 'Payment-Intent');
 
     if (!header) {
       throw new PayBotApiError(
@@ -370,6 +373,15 @@ export class X402Handler {
 
     const nonce = generateEIP3009Nonce();
     const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    // Single source of truth for the fields that go into BOTH the signed message
+    // and the serialized signedData (CodeRabbit #15). Previously the signed
+    // message used `nowSeconds + 3600` while signedData serialized `nowSeconds`
+    // (a 3600s divergence), and the signed paymentIntent fell back to 'unknown'
+    // while signedData serialized the raw (possibly undefined) intentId. Either
+    // mismatch makes the EIP-712 signature unrecoverable against the data on the
+    // wire — every MPP signature was effectively unverifiable.
+    const expires = nowSeconds + BigInt(3600);
+    const paymentIntent = intentId || 'unknown';
 
     const signature = await account.signTypedData({
       domain,
@@ -389,8 +401,8 @@ export class X402Handler {
         recipient: requirements.payTo as `0x${string}`,
         amount: BigInt(requirements.amount),
         nonce,
-        expires: nowSeconds + BigInt(3600),
-        paymentIntent: intentId || 'unknown',
+        expires,
+        paymentIntent,
       },
     });
 
@@ -399,8 +411,8 @@ export class X402Handler {
       recipient: requirements.payTo,
       amount: requirements.amount,
       nonce,
-      expires: nowSeconds.toString(),
-      paymentIntent: intentId,
+      expires: expires.toString(),
+      paymentIntent,
       signature,
     };
 
@@ -698,15 +710,40 @@ export class X402Handler {
         );
       }
 
-      const receipt = (await response.json()) as Record<string, unknown>;
+      // A 2xx response can still carry a malformed/missing body. The non-2xx
+      // branch above already guards response.json(); the success branch must too,
+      // or a bad body raises a bare SyntaxError instead of a typed
+      // PayBotApiError (CodeRabbit #16).
+      let receipt: Record<string, unknown>;
+      try {
+        receipt = (await response.json()) as Record<string, unknown>;
+      } catch (error) {
+        throw new PayBotApiError(
+          `Invalid JSON in payment receipt: ${getErrorMessage(error)}`,
+          'INVALID_RECEIPT',
+          response.status,
+        );
+      }
+      if (
+        typeof receipt !== 'object' ||
+        receipt === null ||
+        typeof receipt.receiptId !== 'string' ||
+        receipt.receiptId.length === 0
+      ) {
+        throw new PayBotApiError(
+          'Payment receipt missing receiptId',
+          'INVALID_RECEIPT',
+          response.status,
+        );
+      }
 
       return {
-        receiptId: receipt.receiptId as string,
+        receiptId: receipt.receiptId,
         transactionId: receipt.transactionId as string | undefined,
-        status: receipt.status as 'pending' | 'confirmed' | 'failed',
+        status: (receipt.status as 'pending' | 'confirmed' | 'failed' | undefined) ?? 'pending',
         confirmedAt: receipt.confirmedAt ? new Date(receipt.confirmedAt as string) : undefined,
-        amount: receipt.amount as string,
-        network: receipt.network as string,
+        amount: (receipt.amount as string | undefined) ?? '0',
+        network: (receipt.network as string | undefined) ?? '',
         blockNumber: receipt.blockNumber as number | undefined,
         gasUsed: receipt.gasUsed as string | undefined,
       };

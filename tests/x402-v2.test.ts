@@ -278,6 +278,45 @@ describe('[UNIT] signMPP (via signPayment protocol=mpp)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Test 4b: signMPP — signature MUST recover from the SERIALIZED signedData
+  // (CodeRabbit #15). This is the verifier-on-the-wire check: reconstruct the
+  // EIP-712 message from exactly the fields in `signedData` (not the in-memory
+  // signing inputs) and recover the signer. Pre-fix, signedData.expires was
+  // `now` while the signed message used `now + 3600`, so this recovery yielded
+  // a DIFFERENT (garbage) address — every MPP signature was unverifiable.
+  // -------------------------------------------------------------------------
+
+  it('[UNIT] signMPP — signature must recover the signer from the on-the-wire signedData fields (CodeRabbit #15)', async () => {
+    const handler = new X402Handler(TEST_PRIVATE_KEY);
+    const payload = buildPayload('mpp');
+
+    const signed = await handler.signPayment(payload);
+    const sd = signed.signedData as Record<string, unknown>;
+
+    // Reconstruct the typed-data message PURELY from serialized signedData —
+    // exactly what a relying party receiving the wire payload would do.
+    const recovered = await recoverTypedDataAddress({
+      domain: buildMppDomain(sd.recipient as string),
+      types: MPP_TYPES,
+      primaryType: 'PaymentAuthorization',
+      message: {
+        payer: sd.payer as `0x${string}`,
+        recipient: sd.recipient as `0x${string}`,
+        amount: BigInt(sd.amount as string),
+        nonce: sd.nonce as `0x${string}`,
+        expires: BigInt(sd.expires as string),
+        paymentIntent: sd.paymentIntent as string,
+      },
+      signature: sd.signature as `0x${string}`,
+    });
+
+    expect(recovered.toLowerCase()).toBe(TEST_ACCOUNT_ADDRESS.toLowerCase());
+    // And the serialized expiry is the 1-hour window that was actually signed.
+    const nowSec = BigInt(Math.floor(FIXED_NOW.getTime() / 1000));
+    expect(sd.expires).toBe((nowSec + 3600n).toString());
+  });
+
+  // -------------------------------------------------------------------------
   // Test 5: signMPP — graceful fallback when intentId is missing
   // -------------------------------------------------------------------------
 
@@ -307,6 +346,28 @@ describe('[UNIT] signMPP (via signPayment protocol=mpp)', () => {
       signature: signed.signature as `0x${string}`,
     });
     expect(ok).toBe(true);
+
+    // CodeRabbit #15: the SERIALIZED paymentIntent must also be 'unknown' (not
+    // a raw undefined/empty), so a wire verifier recovers the signer. Pre-fix
+    // signedData.paymentIntent serialized the raw empty/undefined intentId,
+    // diverging from the signed 'unknown'.
+    const sd = signed.signedData as Record<string, unknown>;
+    expect(sd.paymentIntent).toBe('unknown');
+    const recovered = await recoverTypedDataAddress({
+      domain: buildMppDomain(sd.recipient as string),
+      types: MPP_TYPES,
+      primaryType: 'PaymentAuthorization',
+      message: {
+        payer: sd.payer as `0x${string}`,
+        recipient: sd.recipient as `0x${string}`,
+        amount: BigInt(sd.amount as string),
+        nonce: sd.nonce as `0x${string}`,
+        expires: BigInt(sd.expires as string),
+        paymentIntent: sd.paymentIntent as string,
+      },
+      signature: sd.signature as `0x${string}`,
+    });
+    expect(recovered.toLowerCase()).toBe(TEST_ACCOUNT_ADDRESS.toLowerCase());
   });
 
   // -------------------------------------------------------------------------
@@ -615,6 +676,32 @@ describe('[UNIT] on402Response', () => {
       /Failed to parse Payment-Intent/,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // CodeRabbit #14: legacy Payment-Intent header lookup must be fully
+  // case-insensitive (the old code checked only 'Payment-Intent' /
+  // 'payment-intent' and missed e.g. the all-caps 'PAYMENT-INTENT').
+  // -------------------------------------------------------------------------
+
+  it('[UNIT] on402Response — should read the legacy Payment-Intent header case-insensitively (CodeRabbit #14)', () => {
+    const handler = new X402Handler();
+    const intent: PaymentIntent = {
+      intentId: 'intent_ci',
+      protocol: 'x402',
+      requirements: buildRequirements(),
+      version: '2.0',
+      createdAt: FIXED_NOW.toISOString(),
+      expiresAt: new Date(FIXED_NOW.getTime() + 300_000).toISOString(),
+    };
+    const encoded = Buffer.from(JSON.stringify(intent)).toString('base64');
+
+    // All-caps header name — must still be found.
+    const response = build402Response({
+      headers: { 'PAYMENT-INTENT': `x402:v2:${encoded}` },
+    });
+    const payload = handler.on402Response(response);
+    expect(payload.paymentIntent.intentId).toBe('intent_ci');
+  });
 });
 
 describe('[UNIT] submitPayment', () => {
@@ -749,6 +836,58 @@ describe('[UNIT] submitPayment', () => {
     await expect(
       handler.submitPayment(signed, 'https://example.com/pay'),
     ).rejects.toThrow(/ECONNREFUSED/);
+
+    vi.unstubAllGlobals();
+  });
+
+  // -------------------------------------------------------------------------
+  // CodeRabbit #16: a 2xx response with a malformed/missing body must surface a
+  // typed PayBotApiError (INVALID_RECEIPT), not a raw SyntaxError or an
+  // undefined-receiptId Receipt.
+  // -------------------------------------------------------------------------
+
+  it('[UNIT] submitPayment — should throw INVALID_RECEIPT when a 2xx response body is not valid JSON (CodeRabbit #16)', async () => {
+    const handler = new X402Handler(TEST_PRIVATE_KEY);
+    const signed = buildSignedPayment();
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON');
+      },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      handler.submitPayment(signed, 'https://example.com/pay'),
+    ).rejects.toMatchObject({
+      name: 'PayBotApiError',
+      code: 'INVALID_RECEIPT',
+      statusCode: 200,
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it('[UNIT] submitPayment — should throw INVALID_RECEIPT when a 2xx receipt is missing receiptId (CodeRabbit #16)', async () => {
+    const handler = new X402Handler(TEST_PRIVATE_KEY);
+    const signed = buildSignedPayment();
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'confirmed', amount: '1000000' }), // no receiptId
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      handler.submitPayment(signed, 'https://example.com/pay'),
+    ).rejects.toMatchObject({
+      name: 'PayBotApiError',
+      code: 'INVALID_RECEIPT',
+      statusCode: 200,
+    });
 
     vi.unstubAllGlobals();
   });

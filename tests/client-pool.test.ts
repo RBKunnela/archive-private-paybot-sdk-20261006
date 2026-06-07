@@ -267,6 +267,118 @@ describe('PayBotClientPool', () => {
       expect(result.success).toBe(true);
       expect(unlimited.botStats('bot-a')).toEqual({ dailySpentUsd: 10, dailyTxCount: 1 });
     });
+
+    // ── CodeRabbit #3: reject non-finite/unparseable/negative amounts ──────
+    it.each(['nan', 'inf', '-inf', 'abc', '-5', '1abc', ''])(
+      'rejects amount %j with INVALID_AMOUNT before any treasury math or network call',
+      async (badAmount) => {
+        // CodeRabbit #3: nan/inf/unparseable/negative amounts were coerced via
+        // parseFloat → NaN and treated as zero-cost, sailing past the treasury
+        // without ever being debited. They must be rejected pre-network.
+        const result = await pool.payAs('bot-a', {
+          resource: 'https://api.example.com/data',
+          amount: badAmount,
+          payTo: '0x0000000000000000000000000000000000000001',
+        });
+        expect(result.success).toBe(false);
+        expect(result.errorCode).toBe('INVALID_AMOUNT');
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(pool.remainingTreasuryUsd()).toBe(100); // treasury untouched
+      },
+    );
+
+    it('rejects a non-finite amount even when unbounded (no shared limit)', async () => {
+      const unlimited = new PayBotClientPool({
+        apiKey: 'pb_test',
+        facilitatorUrl: 'https://api.test.com',
+      });
+      unlimited.addBot({ botId: 'bot-a' });
+      const result = await unlimited.payAs('bot-a', {
+        resource: 'https://api.example.com/data',
+        amount: 'inf',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+      expect(result.errorCode).toBe('INVALID_AMOUNT');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── CodeRabbit #4: treasury concurrency (reserve/commit/refund) ──────────
+  describe('payAs concurrency', () => {
+    /** A success PaymentResult, mirroring Python's _ok_result(). */
+    function okResult() {
+      return {
+        success: true,
+        grossAmount: '0',
+        netAmount: '0',
+        commissionAmount: '0',
+        commissionRate: 0,
+      };
+    }
+
+    it('never overruns the shared limit under concurrent payAs (CodeRabbit #4)', async () => {
+      // Limit admits exactly 5 of 10 concurrent $10 spends. Each stubbed pay()
+      // awaits a tick so all promises interleave between the limit check and the
+      // spend record — the exact window the synchronous reservation must close.
+      // Without reserve-before-await, every caller would pass the check and the
+      // treasury would overrun.
+      const pool = new PayBotClientPool({
+        apiKey: 'pb_test',
+        facilitatorUrl: 'https://api.test.com',
+        sharedDailyLimitUsd: 50,
+      });
+      const client = pool.addBot({ botId: 'bot-a' });
+
+      // Yielding async stub: forces interleaving before the result resolves.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).pay = async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        return okResult();
+      };
+
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () =>
+          pool.payAs('bot-a', {
+            resource: 'r',
+            amount: '10',
+            payTo: '0x0000000000000000000000000000000000000001',
+          }),
+        ),
+      );
+
+      const successes = results.filter((r) => r.success);
+      const rejections = results.filter((r) => !r.success);
+      expect(successes).toHaveLength(5);
+      expect(rejections.every((r) => r.errorCode === 'TREASURY_EXCEEDED')).toBe(true);
+      expect(pool.remainingTreasuryUsd()).toBe(0); // never exceeded the cap
+      expect(pool.botStats('bot-a').dailyTxCount).toBe(5);
+    });
+
+    it('refunds the reservation when pay() throws (CodeRabbit #4)', async () => {
+      // An exception from pay() must refund the reservation so the treasury is
+      // not permanently debited for a payment that never happened.
+      const pool = new PayBotClientPool({
+        apiKey: 'pb_test',
+        facilitatorUrl: 'https://api.test.com',
+        sharedDailyLimitUsd: 100,
+      });
+      const client = pool.addBot({ botId: 'bot-a' });
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client as any).pay = async () => {
+        await new Promise((r) => setTimeout(r, 0));
+        throw new Error('network exploded');
+      };
+
+      await expect(
+        pool.payAs('bot-a', {
+          resource: 'r',
+          amount: '30',
+          payTo: '0x0000000000000000000000000000000000000001',
+        }),
+      ).rejects.toThrow('network exploded');
+      expect(pool.remainingTreasuryUsd()).toBe(100); // reservation refunded
+    });
   });
 
   describe('botStats', () => {

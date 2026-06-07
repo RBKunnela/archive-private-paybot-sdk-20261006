@@ -92,13 +92,40 @@ export class MicropaymentEngine {
   }
 
   async batchPayments(paymentIds: string[], options?: SettlementOptions): Promise<BatchedSettlement> {
-    const payments: MicropaymentQueueItem[] = [];
+    // Index every known item by id, then resolve each requested id exactly once.
+    // Previously this silently dropped unknown ids and happily batched
+    // already-pending/settled items (CodeRabbit #8). We now include ONLY queued
+    // items and fail loudly listing what could not be batched.
+    const byId = new Map<string, MicropaymentQueueItem>();
     for (const items of this.queue.values()) {
       for (const item of items) {
-        if (paymentIds.includes(item.paymentId)) {
-          payments.push(item);
-        }
+        byId.set(item.paymentId, item);
       }
+    }
+
+    const payments: MicropaymentQueueItem[] = [];
+    const missingIds: string[] = [];
+    const nonQueued: string[] = [];
+    for (const pid of paymentIds) {
+      const item = byId.get(pid);
+      if (item === undefined) {
+        missingIds.push(pid);
+      } else if (item.status !== 'queued') {
+        nonQueued.push(`${pid} (status=${item.status})`);
+      } else {
+        payments.push(item);
+      }
+    }
+
+    if (missingIds.length > 0 || nonQueued.length > 0) {
+      const problems: string[] = [];
+      if (missingIds.length > 0) {
+        problems.push(`missing: ${missingIds.join(', ')}`);
+      }
+      if (nonQueued.length > 0) {
+        problems.push(`not queued: ${nonQueued.join(', ')}`);
+      }
+      throw new Error(`Cannot batch payments - ${problems.join('; ')}`);
     }
 
     if (payments.length === 0) {
@@ -117,7 +144,10 @@ export class MicropaymentEngine {
     }
 
     const recipientSet = new Set(payments.map(p => p.recipient));
-    const gasEstimateUsd = options?.skipGasEstimate ? 0 : this.estimateGasCost(payments.length);
+    const gasEstimateUsd = options?.skipGasEstimate
+      ? 0
+      // Price gas from THIS batch's recipients, not the whole queue (CodeRabbit #9).
+      : this.estimateGasCost(payments.length, recipientSet.size);
     const gasPerPaymentUsd = gasEstimateUsd / payments.length;
 
     return {
@@ -289,11 +319,22 @@ export class MicropaymentEngine {
     };
   }
 
-  private estimateGasCost(paymentCount: number): number {
+  /**
+   * Estimate the per-payment gas cost (USD), amortized across unique recipients.
+   *
+   * @param paymentCount - Number of payments to amortize the cost across.
+   * @param uniqueRecipients - Distinct recipients to price gas for. When
+   *   omitted (the public {@link getGasEstimate} path), falls back to the
+   *   whole-queue recipient count. {@link batchPayments} passes the batch's own
+   *   recipient count so a batch is never charged for unrelated queued
+   *   recipients (CodeRabbit #9).
+   * @returns The per-payment gas cost in USD.
+   */
+  private estimateGasCost(paymentCount: number, uniqueRecipients?: number): number {
     const baseGas = BigInt(21_000);
     const gasPerRecipient = BigInt(5_000);
-    const uniqueRecipients = this.getQueueStatistics().uniqueRecipients;
-    const totalGas = baseGas + BigInt(uniqueRecipients) * gasPerRecipient;
+    const recipients = uniqueRecipients ?? this.getQueueStatistics().uniqueRecipients;
+    const totalGas = baseGas + BigInt(recipients) * gasPerRecipient;
 
     const gweiPrice = BigInt(5);
     const weiPerGwei = BigInt(1_000_000_000);
@@ -309,13 +350,52 @@ export class MicropaymentEngine {
     return gasCostUsd / paymentCount;
   }
 
+  /**
+   * Auto-settle `windowKey` when ITS OWN queued items cross a threshold.
+   *
+   * The decision is scoped to the target window's own queued items, NOT the
+   * engine-wide aggregate (CodeRabbit #10). Previously `shouldSettle` came from
+   * {@link getQueueStatistics} (all windows + pending items), so once
+   * historical/pending items pushed the engine-wide total over a threshold,
+   * queueing a single payment into a fresh window would settle only that new
+   * sub-threshold window while the genuinely-full window sat unsettled.
+   *
+   * @param windowKey - The window to evaluate and (if eligible) settle.
+   */
   private async checkAutoSettle(windowKey: string): Promise<void> {
-    const stats = this.getQueueStatistics();
-
-    if (stats.shouldSettle) {
+    if (this.windowShouldSettle(windowKey)) {
       const paymentIds = this.getPaymentIdsForWindow(windowKey);
-      await this.batchPayments(paymentIds);
+      if (paymentIds.length > 0) {
+        await this.batchPayments(paymentIds);
+      }
     }
+  }
+
+  /**
+   * Whether a window's OWN queued items meet a settlement threshold.
+   *
+   * Mirrors the engine-wide `shouldSettle` rule (count OR total USD) but over
+   * only this window's `queued` items, so a window settles on its own contents
+   * independent of other windows or pending items (CodeRabbit #10).
+   *
+   * @param windowKey - The window to evaluate.
+   * @returns `true` when the window's queued items cross a threshold.
+   */
+  private windowShouldSettle(windowKey: string): boolean {
+    const items = this.queue.get(windowKey);
+    if (!items || items.length === 0) {
+      return false;
+    }
+    const queued = items.filter(item => item.status === 'queued');
+    if (queued.length === 0) {
+      return false;
+    }
+    const count = queued.length;
+    const totalUsd = queued.reduce((sum, item) => sum + parseFloat(item.amountUsd), 0);
+    return (
+      count >= this.settlementThresholds.minPaymentCount ||
+      totalUsd >= this.settlementThresholds.minTotalUsd
+    );
   }
 
   private getBatchWindowKey(): string {
@@ -336,8 +416,17 @@ export class MicropaymentEngine {
       throw new Error(`Invalid USD amount: ${usdAmount}`);
     }
     const parts = usdAmount.split('.');
-    const whole = parts[0] ?? '0';
-    const fraction = (parts[1] ?? '').padEnd(6, '0').slice(0, 6);
+    const whole = parts[0] && parts[0].length > 0 ? parts[0] : '0';
+    const rawFraction = parts[1] ?? '';
+    // USDC has 6 decimals. Silently truncating extra precision (the old
+    // .padEnd(6,'0').slice(0,6)) made the payer underpay vs. what they asked
+    // for (CodeRabbit #7). Reject any amount finer than 6 decimals — ignoring
+    // trailing zeros, which carry no value (e.g. "0.0010000000" is fine;
+    // "0.0000009" is not).
+    if (rawFraction.replace(/0+$/, '').length > 6) {
+      throw new Error(`USD amount exceeds USDC precision (6 decimals): ${usdAmount}`);
+    }
+    const fraction = rawFraction.padEnd(6, '0').slice(0, 6);
     return `${whole}${fraction}`.replace(/^0+/, '') || '0';
   }
 

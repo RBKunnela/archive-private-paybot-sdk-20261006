@@ -286,6 +286,26 @@ describe('[UNIT] queuePayment', () => {
   });
 
   // -------------------------------------------------------------------------
+  // CodeRabbit #7: reject sub-base-unit (>6-decimal) precision
+  // -------------------------------------------------------------------------
+
+  it('[UNIT] queuePayment — should reject amounts finer than USDC 6-decimal precision instead of silently truncating (CodeRabbit #7)', async () => {
+    const engine = buildEngine({ minPaymentCount: 100, minTotalUsd: 100 });
+    // CodeRabbit #7: "0.0000009" (7 significant decimals) previously truncated
+    // to "0.000000" (0 base units) → the payer underpaid silently.
+    await expect(engine.queuePayment(RECIPIENT_A, '0.0000009')).rejects.toThrow(
+      /precision/,
+    );
+  });
+
+  it('[UNIT] queuePayment — should allow trailing-zero padding beyond 6 decimals (no precision loss) (CodeRabbit #7)', async () => {
+    const engine = buildEngine({ minPaymentCount: 100, minTotalUsd: 100 });
+    // Trailing zeros carry no value: "0.0010000000" == "0.001" → accepted.
+    const pid = await engine.queuePayment(RECIPIENT_A, '0.0010000000');
+    expect(engine.getPaymentStatus(pid)!.amountBaseUnits).toBe('1000');
+  });
+
+  // -------------------------------------------------------------------------
   // B-6: edge case — auto-settle triggers when thresholds met
   // -------------------------------------------------------------------------
 
@@ -319,6 +339,10 @@ describe('[UNIT] batchPayments', () => {
 
   it('[UNIT] batchPayments — should sign a BatchSettlement covering all queued paymentIds, set each payment.status = \'pending\', and return a BatchedSettlement with correct totals/recipientCount/expiresAt', async () => {
     // High thresholds so auto-settle does NOT pre-empt this manual call.
+    // Restore real randomness so the 3 paymentIds are distinct — with the
+    // suite-wide Math.random mock + frozen clock they would collide, and the
+    // CodeRabbit #8 index-by-id resolution (correctly) dedupes identical ids.
+    randomSpy.mockRestore();
     const engine = buildEngine({ minPaymentCount: 100, minTotalUsd: 100 });
 
     // Queue 3 payments to 2 unique recipients, total $0.30.
@@ -370,12 +394,36 @@ describe('[UNIT] batchPayments', () => {
   // B-8: error path — paymentIds not in queue
   // -------------------------------------------------------------------------
 
-  it('[UNIT] batchPayments — should throw \'No payments found with given IDs\' when paymentIds reference non-existent queue entries', async () => {
+  it('[UNIT] batchPayments — should throw loudly listing missing ids when paymentIds reference non-existent queue entries (CodeRabbit #8)', async () => {
     const engine = buildEngine({ minPaymentCount: 100, minTotalUsd: 100 });
 
+    // CodeRabbit #8: unknown ids were silently dropped. Now they must be named.
     await expect(
       engine.batchPayments(['mp_does_not_exist_1', 'mp_does_not_exist_2']),
-    ).rejects.toThrow(/No payments found with given IDs/);
+    ).rejects.toThrow(
+      /Cannot batch payments - missing: mp_does_not_exist_1, mp_does_not_exist_2/,
+    );
+  });
+
+  it('[UNIT] batchPayments — should throw \'No payments found with given IDs\' for an empty id list', async () => {
+    const engine = buildEngine({ minPaymentCount: 100, minTotalUsd: 100 });
+    await expect(engine.batchPayments([])).rejects.toThrow(
+      /No payments found with given IDs/,
+    );
+  });
+
+  it('[UNIT] batchPayments — should refuse to re-batch a non-queued (pending) payment and name it (CodeRabbit #8)', async () => {
+    const engine = buildEngine({ minPaymentCount: 100, minTotalUsd: 100 });
+    const id1 = await engine.queuePayment(RECIPIENT_A, '0.10');
+    // First batch flips id1 → 'pending'.
+    await engine.batchPayments([id1]);
+    expect(engine.getPaymentStatus(id1)!.status).toBe('pending');
+
+    // A second batch of the same id must fail loudly rather than silently
+    // re-batching an already-pending payment.
+    await expect(engine.batchPayments([id1])).rejects.toThrow(
+      new RegExp(`Cannot batch payments - not queued: ${id1} \\(status=pending\\)`),
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -401,6 +449,90 @@ describe('[UNIT] batchPayments', () => {
     const idB = await engine2.queuePayment(RECIPIENT_B, '0.20');
     const withGas = await engine2.batchPayments([idA, idB]);
     expect(parseFloat(withGas.gasEstimateUsd)).toBeGreaterThan(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // CodeRabbit #9: gas priced from the batch's own recipients, not the queue
+  // -------------------------------------------------------------------------
+
+  it('[UNIT] batchPayments — should price gas from the batch\'s OWN recipients, not the whole queue (CodeRabbit #9)', async () => {
+    randomSpy.mockRestore(); // distinct paymentIds for the 6 queued items
+    const engine = buildEngine({ minPaymentCount: 100, minTotalUsd: 100 });
+    // Queue many recipients but batch only one. The batch's gas estimate must
+    // equal the single-recipient estimate, independent of the other queued
+    // recipients (which previously inflated it via the whole-queue count).
+    const target = await engine.queuePayment(RECIPIENT_A, '0.001');
+    for (let i = 0; i < 5; i++) {
+      const addr = `0x${i.toString(16).padStart(40, '0')}` as Address;
+      await engine.queuePayment(addr, '0.001');
+    }
+    const batch = await engine.batchPayments([target]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const expected = (engine as any).estimateGasCost(1, 1).toFixed(6);
+    expect(batch.gasEstimateUsd).toBe(expected);
+  });
+});
+
+// ===========================================================================
+// CodeRabbit #10: auto-settle decision scoped to the target window
+// ===========================================================================
+
+describe('[UNIT] auto-settle window scoping (CodeRabbit #10)', () => {
+  it('[UNIT] queuePayment — should NOT auto-settle a fresh sub-threshold window just because the engine-wide aggregate is over the threshold', async () => {
+    // min_payment_count=3: seed an old window with 3 queued items so the
+    // engine-wide total is already >= 3, then queue ONE payment into the current
+    // wall-clock window. The fresh window has only 1 item → must stay queued,
+    // and the old window (not the target) must remain untouched.
+    const engine = buildEngine({ minPaymentCount: 3, minTotalUsd: 1000 });
+
+    // White-box: seed a distinct, non-current window directly.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const q = (engine as any).queue as Map<string, unknown[]>;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const u2b = (engine as any).usdToBaseUnits.bind(engine) as (s: string) => string;
+    const seeded = Array.from({ length: 3 }, (_, i) => ({
+      paymentId: `window_old_A_${i}`,
+      recipient: RECIPIENT_B,
+      amountUsd: '0.001',
+      amountBaseUnits: u2b('0.001'),
+      queuedAt: Date.now(),
+      status: 'queued',
+      metadata: undefined,
+    }));
+    q.set('window_old_A', seeded);
+
+    const pidB = await engine.queuePayment(RECIPIENT_A, '0.001');
+
+    // The fresh window's lone payment did NOT settle on engine-wide totals.
+    expect(engine.getPaymentStatus(pidB)!.status).toBe('queued');
+    // The accumulated old window was not the target → left untouched.
+    for (const item of seeded as Array<{ status: string }>) {
+      expect(item.status).toBe('queued');
+    }
+  });
+
+  it('[UNIT] queuePayment — should auto-settle when the target window\'s OWN queued count crosses the threshold', async () => {
+    // Restore real randomness so the 3 paymentIds are distinct (the suite-wide
+    // Math.random mock + frozen clock would otherwise collide all ids).
+    randomSpy.mockRestore();
+    const engine = buildEngine({ minPaymentCount: 3, minTotalUsd: 1000 });
+    const p1 = await engine.queuePayment(RECIPIENT_A, '0.001');
+    const p2 = await engine.queuePayment(RECIPIENT_A, '0.001');
+    expect(engine.getPaymentStatus(p1)!.status).toBe('queued'); // below threshold
+    const p3 = await engine.queuePayment(RECIPIENT_A, '0.001'); // crosses count
+    for (const pid of [p1, p2, p3]) {
+      expect(engine.getPaymentStatus(pid)!.status).toBe('pending');
+    }
+  });
+
+  it('[UNIT] queuePayment — should auto-settle when the target window\'s OWN queued USD sum crosses the threshold', async () => {
+    randomSpy.mockRestore(); // distinct paymentIds (see count-crossing test)
+    const engine = buildEngine({ minPaymentCount: 1000, minTotalUsd: 0.5 });
+    const p1 = await engine.queuePayment(RECIPIENT_A, '0.3');
+    expect(engine.getPaymentStatus(p1)!.status).toBe('queued'); // 0.3 < 0.5
+    const p2 = await engine.queuePayment(RECIPIENT_A, '0.3'); // 0.6 >= 0.5 → settle
+    expect(engine.getPaymentStatus(p1)!.status).toBe('pending');
+    expect(engine.getPaymentStatus(p2)!.status).toBe('pending');
   });
 });
 
@@ -570,23 +702,21 @@ describe('[UNIT] getQueueStatistics', () => {
     const after2 = engine.getQueueStatistics();
     expect(after2.activeWindows).toBe(2);
     expect(after2.totalPayments).toBe(2);
-    // WHY: queuePayment 2 calls checkAutoSettle, which reads the AGGREGATE
-    // statistics (totalUsd=1.0 across both windows) and now sees
-    // shouldSettle=true. BUT checkAutoSettle only batches the items in the
-    // CURRENT windowKey (line 313: `getPaymentIdsForWindow(windowKey)`),
-    // not all-windows. So payment 2 (in the new window) gets settled
-    // (status='pending'), and payment 1 (in the old window) stays 'queued'.
-    // This is the per-window auto-settle contract — only THIS window batches.
-    expect(after2.pendingCount).toBe(1);
-    expect(after2.queuedCount).toBe(1);
+    // CodeRabbit #10: queuePayment 2 calls checkAutoSettle, which now decides
+    // from the TARGET window's OWN queued items — not the engine-wide aggregate.
+    // The new window holds a single $0.50 payment (< $1.00 and < 100 count), so
+    // it must NOT auto-settle just because the cross-window aggregate is over
+    // the threshold. Both payments therefore stay 'queued'. (Pre-fix, payment 2
+    // was wrongly settled while the older window — never the target — sat idle.)
+    expect(after2.pendingCount).toBe(0);
+    expect(after2.queuedCount).toBe(2);
     expect(after2.uniqueRecipients).toBe(2);
     expect(after2.paymentsByRecipient[RECIPIENT_A]).toBe(1);
     expect(after2.paymentsByRecipient[RECIPIENT_B]).toBe(1);
     expect(after2.averageUsdPerPayment).toBeCloseTo(0.5, 10);
-    // 2 payments + $1.0 → shouldSettle aggregate flips true (the very
-    // condition that triggered the per-window auto-settle above; it remains
-    // true after settlement because totalUsd still aggregates 'pending'
-    // items via line 153, not just 'queued' ones).
+    // shouldSettle remains an INFORMATIONAL engine-wide aggregate (2 payments +
+    // $1.0 across windows). It is intentionally NOT what drives the per-window
+    // auto-settle decision anymore — it just reports the global picture.
     expect(after2.shouldSettle).toBe(true);
   });
 });

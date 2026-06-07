@@ -79,7 +79,7 @@ const DEFAULT_MAX_TIMEOUT_SECONDS = 300;
  * @param nowMs - Current epoch ms (injectable for deterministic tests).
  * @returns A positive integer number of seconds.
  */
-function deriveMaxTimeoutSeconds(
+export function deriveMaxTimeoutSeconds(
   expiresAt: string | undefined,
   nowMs: number = Date.now(),
 ): number {
@@ -90,7 +90,11 @@ function deriveMaxTimeoutSeconds(
   if (Number.isNaN(expMs)) {
     return DEFAULT_MAX_TIMEOUT_SECONDS;
   }
-  const seconds = Math.floor((expMs - nowMs) / 1000);
+  // Round UP so any positive remaining window survives (CodeRabbit #1).
+  // Math.floor mapped sub-second windows (e.g. 500ms) to 0, which then fell
+  // through to the 300s default — silently granting far more time than the
+  // mandate allowed. ceil keeps any positive remaining as at least 1 second.
+  const seconds = Math.ceil((expMs - nowMs) / 1000);
   return seconds > 0 ? seconds : DEFAULT_MAX_TIMEOUT_SECONDS;
 }
 
