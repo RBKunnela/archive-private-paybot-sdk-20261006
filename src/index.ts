@@ -1,4 +1,4 @@
-export { PayBotClient } from './client.js';
+export { PayBotClient, mapPendingEnvelope, amountToBaseUnitsUsd } from './client.js';
 export { PayBotClientPool } from './client-pool.js';
 export type {
   PayBotClientPoolConfig,

@@ -67,6 +67,60 @@ const response = await handler.fetch('https://api.example.com/paid-endpoint');
 const data = await response.json();
 ```
 
+When the server places a payment in its **approval band** (a borderline amount
+that needs a human decision), the auto-handler does **not** block and does **not**
+throw — it returns a `202` response carrying the pending result, so your agent
+stays responsive:
+
+```typescript
+const response = await handler.fetch('https://api.example.com/paid-endpoint');
+if (response.status === 202) {
+  const pending = await response.json(); // { status: 'pending_approval', approvalId, … }
+  // Opt-in: wait for the human to decide (or carry on and check back later).
+  const final = await handler.client.waitForApproval(pending.approvalId);
+}
+```
+
+> **Pending vs. over-ceiling — two distinct paths.** The client-side `maxAutoPay`
+> ceiling still **throws** (your bot saying "I will never auto-pay this much"). A
+> server-side `pending_approval` is a **returned result** (the server saying "a
+> human should look at this"). They never collapse into one.
+
+## Human-in-the-Loop Approvals (pending payments)
+
+When PayBotFin's policy places a payment in the **approval band**, `pay()` returns
+a **non-throwing** pending result instead of settling — the money has not moved,
+but the payment is paused awaiting a human, not failed:
+
+```typescript
+const result = await client.pay({ resource, amount: '500', payTo });
+
+if (result.status === 'pending_approval') {
+  // success is false (money didn't move) but this is a PAUSE, not a failure.
+  console.log('Awaiting approval:', result.approvalId, 'expires', result.expiresAt);
+
+  // Opt-in: block until a human approves/denies, or the request times out.
+  const final = await client.waitForApproval(result.approvalId!, {
+    timeoutMs: 15 * 60_000, // default: 15 min (aligned to the server TTL)
+    intervalMs: 3_000,      // default: 3 s poll cadence
+  });
+
+  if (final.success) {
+    console.log('Approved + settled:', final.txHash);
+  } else if (final.status === 'denied') {
+    console.log('Denied or expired:', final.error);
+  } else if (final.status === 'pending_approval') {
+    // Local timeout — the SERVER record is still live; the SDK timing out never
+    // cancels the approval. You may call waitForApproval(...) again later.
+  }
+}
+```
+
+**Safe degradation:** a consumer that only reads `result.success` keeps working
+unchanged — a pending payment looks like `success: false` ("not done yet"), with
+no new crash path. `waitForApproval()` itself **never throws**: poll errors and
+local timeouts are returned as `PaymentResult`s, not exceptions.
+
 ## Real Payments (EIP-3009)
 
 Pass a wallet private key to sign actual on-chain USDC transfers:
@@ -96,7 +150,8 @@ PayBot enforces progressive trust levels that govern what your bot can do:
 
 | Method | Description |
 |--------|-------------|
-| `client.pay(request)` | Execute a payment (verify + settle) |
+| `client.pay(request)` | Execute a payment (verify + settle); returns a pending result if the server requires human approval |
+| `client.waitForApproval(approvalId, opts?)` | Poll a pending approval until settled/denied/expired (or local timeout). Never throws |
 | `client.register(trustLevel?)` | Register bot with facilitator |
 | `client.balance()` | Get trust status and remaining budget |
 | `client.history(limit?)` | Get transaction history |

@@ -83,6 +83,39 @@ export interface PaymentResult {
   errorCode?: string;
   /** Additional error context from the server */
   errorDetails?: Record<string, unknown>;
+  /**
+   * Settlement-status discriminator (A5 HITL approval band). OPTIONAL →
+   * non-breaking: a consumer that reads only {@link PaymentResult.success}
+   * keeps working unchanged.
+   *
+   * - `'settled'`          — the payment completed (money moved); `success:true`.
+   * - `'pending_approval'` — the server placed the payment in the approval band
+   *   and a human must decide. `success` is **`false`** (money did not move),
+   *   but this distinguishes a *pause* from a real failure. The bot may
+   *   {@link "./client".PayBotClient.waitForApproval} on {@link PaymentResult.approvalId}.
+   * - `'denied'`           — a human (or TTL expiry, fail-closed) refused the
+   *   payment; `success:false`.
+   *
+   * When absent, the result is a plain success/failure (legacy behavior).
+   */
+  status?: 'settled' | 'pending_approval' | 'denied';
+  /**
+   * The server-issued approval handle. Present when
+   * `status === 'pending_approval'`. Pass it to `waitForApproval()` or poll
+   * {@link PaymentResult.pollUrl} directly.
+   */
+  approvalId?: string;
+  /**
+   * The relative poll path for this pending approval (e.g. `/approvals/ap_…`).
+   * Present when `status === 'pending_approval'`.
+   */
+  pollUrl?: string;
+  /**
+   * ISO-8601 timestamp at which the server's approval record expires
+   * (fail-closed → treated as denied). Present when
+   * `status === 'pending_approval'`; useful for the caller's own timeout math.
+   */
+  expiresAt?: string;
 }
 
 export interface BalanceResult {

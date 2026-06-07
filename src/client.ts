@@ -427,6 +427,18 @@ export class PayBotClient {
             throw error;
           }
 
+          // A5 HITL: when the server places the payment in the approval band,
+          // /verify returns a pending envelope (`status:'pending_approval'`)
+          // instead of a settlement token. Do NOT settle — return a pending
+          // PaymentResult so the bot stays responsive (never-throws preserved).
+          // The SDK keys off `status`, not the HTTP code (a pending is a
+          // decision, mirroring how the core returns 200 for a deny).
+          if (verifyData.status === 'pending_approval') {
+            paySpan?.setAttribute('success', false);
+            paySpan?.setAttribute('status', 'pending_approval');
+            return mapPendingEnvelope(verifyData, request.amount);
+          }
+
           const settlementToken = verifyData.settlementToken as string | undefined;
           if (!settlementToken) {
             paySpan?.setAttribute('success', false);
@@ -509,6 +521,163 @@ export class PayBotClient {
         }
       }
     );
+  }
+
+  /**
+   * Wait for a pending HITL approval to reach a terminal decision (A5 §3.2).
+   *
+   * Polls the core poll endpoint (`GET /approvals/{id}`) every `intervalMs`
+   * until the approval resolves (SETTLED / DENIED / EXPIRED) or `timeoutMs`
+   * elapses. Resolves to a {@link PaymentResult}; **never throws** — a poll
+   * error or a local timeout is surfaced as a returned result, not an
+   * exception.
+   *
+   * On local timeout the returned result keeps `status:'pending_approval'`:
+   * the SDK giving up does NOT cancel or settle the approval — the core record
+   * stays authoritative and live, so the caller may call this again.
+   *
+   * @param approvalId - The approval handle from a pending {@link PaymentResult}.
+   * @param opts - Optional `timeoutMs` (default 15 min, aligned to the core TTL)
+   *   and `intervalMs` (default 3 s poll cadence).
+   * @returns A terminal `PaymentResult` (settled/denied), an expired-as-denied
+   *   result, or — on local timeout / unrecoverable poll error — a result that
+   *   still carries `status:'pending_approval'` so the caller may retry.
+   *
+   * @example
+   * const r = await client.pay({ resource, amount: '500', payTo });
+   * if (r.status === 'pending_approval') {
+   *   const final = await client.waitForApproval(r.approvalId!);
+   *   if (final.success) console.log('settled', final.txHash);
+   * }
+   */
+  async waitForApproval(
+    approvalId: string,
+    opts?: { timeoutMs?: number; intervalMs?: number }
+  ): Promise<PaymentResult> {
+    if (!approvalId || typeof approvalId !== 'string') {
+      // Defensive: an empty handle can never resolve. Return a non-throwing
+      // failure rather than polling a malformed URL forever.
+      return {
+        success: false,
+        grossAmount: '0',
+        netAmount: '0',
+        commissionAmount: '0',
+        commissionRate: 0,
+        error: 'waitForApproval: approvalId is required',
+        errorCode: 'INVALID_APPROVAL_ID',
+      };
+    }
+
+    const timeoutMs = opts?.timeoutMs ?? 15 * 60_000; // 15 min, aligned to core TTL
+    const intervalMs = opts?.intervalMs ?? 3_000;
+    const deadline = Date.now() + timeoutMs;
+
+    // Track the last-seen pending shape so a local timeout returns a faithful
+    // pending result (approvalId/pollUrl/expiresAt preserved). Seeded from the
+    // first successful poll; never lost across iterations.
+    let lastPending: PaymentResult = {
+      success: false,
+      grossAmount: '0',
+      netAmount: '0',
+      commissionAmount: '0',
+      commissionRate: 0,
+      status: 'pending_approval',
+      approvalId,
+      pollUrl: `/approvals/${approvalId}`,
+    };
+
+    for (;;) {
+      let poll: Record<string, unknown> | undefined;
+      try {
+        poll = await this._request<Record<string, unknown>>(`/approvals/${approvalId}`);
+      } catch (error: unknown) {
+        // Never throw: surface the poll error. While the outcome is still
+        // ambiguous we keep status:'pending_approval' so the caller may retry.
+        // If the deadline has also passed, fall through to the timeout return.
+        if (Date.now() >= deadline) {
+          return {
+            ...lastPending,
+            error: `waitForApproval: poll timed out (last error: ${getErrorMessage(error)})`,
+            errorCode: 'APPROVAL_POLL_TIMEOUT',
+          };
+        }
+        lastPending = {
+          ...lastPending,
+          error: getErrorMessage(error),
+          ...(error instanceof PayBotApiError ? { errorCode: error.code } : {}),
+        };
+        await this.delay(intervalMs);
+        continue;
+      }
+
+      const decision = poll.decision as string | undefined;
+
+      // Terminal decisions → resolved PaymentResult.
+      if (decision === 'APPROVED') {
+        const state = poll.state as string | undefined;
+        if (state === 'SETTLED') {
+          return {
+            success: true,
+            txHash: poll.tx_hash as string | undefined,
+            grossAmount: amountToBaseUnitsUsd(poll.amount_usd),
+            netAmount: amountToBaseUnitsUsd(poll.amount_usd),
+            commissionAmount: '0',
+            commissionRate: 0,
+            status: 'settled',
+            approvalId,
+          };
+        }
+        // APPROVED but settle failed (or not yet recorded) → fail-closed result.
+        return {
+          success: false,
+          grossAmount: '0',
+          netAmount: '0',
+          commissionAmount: '0',
+          commissionRate: 0,
+          status: 'denied',
+          approvalId,
+          error: (poll.error as string | undefined) ?? 'Approved payment failed to settle',
+          errorCode: 'APPROVAL_SETTLE_FAILED',
+        };
+      }
+
+      if (decision === 'DENIED' || decision === 'EXPIRED') {
+        // EXPIRED == denied (fail-closed). Both are terminal refusals.
+        return {
+          success: false,
+          grossAmount: '0',
+          netAmount: '0',
+          commissionAmount: '0',
+          commissionRate: 0,
+          status: 'denied',
+          approvalId,
+          error:
+            (poll.error as string | undefined) ??
+            (decision === 'EXPIRED' ? 'Approval expired' : 'Approval denied'),
+          errorCode: decision === 'EXPIRED' ? 'APPROVAL_EXPIRED' : 'APPROVAL_DENIED',
+        };
+      }
+
+      // Still PENDING — refresh the snapshot and either wait or time out.
+      lastPending = {
+        success: false,
+        grossAmount: '0',
+        netAmount: '0',
+        commissionAmount: '0',
+        commissionRate: 0,
+        status: 'pending_approval',
+        approvalId,
+        pollUrl: `/approvals/${approvalId}`,
+        ...(typeof poll.expires_at === 'string' ? { expiresAt: poll.expires_at } : {}),
+      };
+
+      if (Date.now() >= deadline) {
+        // Local timeout: return pending. The CORE record stays live — the SDK
+        // timing out never cancels or settles. The caller may poll again.
+        return lastPending;
+      }
+      await this.delay(intervalMs);
+    }
   }
 
   /**
@@ -967,4 +1136,64 @@ export class PayBotClient {
     }
     return data as { success: boolean; keyId: string; active: boolean };
   }
+}
+
+/**
+ * Convert a USD amount (as returned by the core approval record, e.g. `500`)
+ * into USDC base units (6 decimals) as a decimal string, matching the base-unit
+ * convention {@link PayBotClient.pay} uses for `grossAmount`/`netAmount`.
+ *
+ * Pending/approved results carry the *requested* amount for gross/net (the
+ * money fields are REQUIRED on {@link PaymentResult}); commission stays `'0'`
+ * because no commission applies until/unless the payment settles with one.
+ *
+ * @param amountUsd - The USD amount from the core record (number or string).
+ * @returns The amount in USDC base units as a decimal string (e.g. `'500000000'`),
+ *   or `'0'` when the input is missing or not a finite number.
+ */
+export function amountToBaseUnitsUsd(amountUsd: unknown): string {
+  const n = typeof amountUsd === 'number' ? amountUsd : Number(amountUsd);
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  // 6 decimals (USDC). Round to avoid float drift on fractional cents.
+  return String(Math.round(n * 1e6));
+}
+
+/**
+ * Map a core `pending_approval` envelope (from `/verify`, contract §2a) into a
+ * never-throws {@link PaymentResult}.
+ *
+ * The result is `success:false` (money did not move) but `status:'pending_approval'`
+ * — so a consumer that ignores `status` degrades safely to "not done yet", while
+ * a consumer that reads it can `waitForApproval(approvalId)`. The REQUIRED money
+ * fields are populated per the existing pattern: gross/net = the requested amount
+ * (in base units), commission `'0'`/`0`.
+ *
+ * @param envelope - The parsed `/verify` pending envelope
+ *   (`{ status, approval_id, poll_url, expires_at, amount_usd, reason, … }`).
+ * @param requestedAmount - The human-readable USD amount the bot requested,
+ *   used as a fallback for gross/net when the envelope omits `amount_usd`.
+ * @returns A pending `PaymentResult`.
+ */
+export function mapPendingEnvelope(
+  envelope: Record<string, unknown>,
+  requestedAmount: string
+): PaymentResult {
+  // Prefer the server's amount_usd (authoritative); fall back to the request.
+  const baseUnits =
+    envelope.amount_usd !== undefined
+      ? amountToBaseUnitsUsd(envelope.amount_usd)
+      : amountToBaseUnitsUsd(requestedAmount);
+
+  return {
+    success: false,
+    grossAmount: baseUnits,
+    netAmount: baseUnits,
+    commissionAmount: '0',
+    commissionRate: 0,
+    status: 'pending_approval',
+    approvalId: envelope.approval_id as string | undefined,
+    pollUrl: envelope.poll_url as string | undefined,
+    expiresAt: envelope.expires_at as string | undefined,
+    ...(typeof envelope.reason === 'string' ? { error: envelope.reason } : {}),
+  };
 }

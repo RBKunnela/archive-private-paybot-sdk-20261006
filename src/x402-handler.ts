@@ -69,6 +69,24 @@ export function createX402Handler(config: X402HandlerConfig) {
         network: config.network,
       });
 
+      // A5 HITL pending pass-through (contract §3.3). The amount was UNDER the
+      // client ceiling (the over-ceiling throw above never fired) but the SERVER
+      // placed it in the approval band. Return the pending result WITHOUT
+      // blocking — blocking up to 15 min inside the middleware would hang the
+      // agent's HTTP call. Waiting is opt-in: the caller decides whether to
+      // `await client.waitForApproval(approvalId)`. This is DISTINCT from the
+      // over-ceiling throw: a server band-decision is not a client ceiling hit.
+      if (result.status === 'pending_approval') {
+        return new Response(JSON.stringify(result), {
+          status: 202, // Accepted — awaiting human approval (not an error).
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Payment-Status': 'pending_approval',
+            ...(result.approvalId ? { 'X-Payment-Approval-Id': result.approvalId } : {}),
+          },
+        });
+      }
+
       if (!result.success) {
         throw new Error(`x402: Payment failed: ${result.error}`);
       }
