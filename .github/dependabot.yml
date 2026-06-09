@@ -69,6 +69,11 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@typescript-eslint/parser"
         update-types: ["version-update:semver-major"]
+      # Commander 15 is ESM-only + requires Node ≥ 22.12.0. SDK supports Node ≥ 20.
+      # Staying on 14.x (maintenance until May 2027) until we drop Node 20–21 support.
+      # Precedent: dependabot PR #94 (closed 2026-06-09).
+      - dependency-name: "commander"
+        update-types: ["version-update:semver-major"]
 
   # ---------- GitHub Actions ecosystem ----------
   - package-ecosystem: "github-actions"
