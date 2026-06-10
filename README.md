@@ -25,21 +25,36 @@ The SDK wraps payment logic for bots, handling registration, payment execution, 
 npm install paybot-sdk
 ```
 
+## Get your API key
+
+No dashboard needed — one `signup()` call against the hosted facilitator at `https://api.paybotcore.com` creates everything:
+
+```typescript
+import { PayBotClient } from 'paybot-sdk';
+
+const account = await PayBotClient.signup('you@example.com', 'a-strong-password', {
+  botId: 'my-bot', // optional, defaults to 'default'
+});
+console.log(account.apiKey); // pb_live_... — printed ONLY once, save it now
+```
+
+`signup()` registers your operator account, logs in, creates an API key, **and registers your bot** — all in one call. The returned `apiKey` is shown only once; store it securely (e.g. in the `PAYBOT_API_KEY` env var).
+
+> **Heads-up:** because `signup()` already registered your bot, calling `client.register()` afterwards with the same `botId` throws a `409 ALREADY_EXISTS`. Skip `register()` and go straight to `pay()` / `balance()`. Only call `register()` when adding **additional** bots under new `botId`s.
+
 ## Quick Start
 
 ```typescript
 import { PayBotClient } from 'paybot-sdk';
 
 const client = new PayBotClient({
-  apiKey: 'pb_test_...',
-  botId: 'my-bot',
+  apiKey: process.env.PAYBOT_API_KEY!, // from signup() above
+  botId: 'my-bot',                     // same botId you passed to signup()
   facilitatorUrl: 'https://api.paybotcore.com',
 });
 
-// Register your bot
-await client.register();
-
-// Make a payment
+// signup() already registered this bot — no register() needed.
+// Make a payment:
 const result = await client.pay({
   resource: 'https://api.example.com/data',
   amount: '0.01',
@@ -48,6 +63,13 @@ const result = await client.pay({
 
 console.log(result.success, result.txHash);
 ```
+
+### Mock mode vs real settlement
+
+The SDK has two payment modes, decided by whether you pass `walletPrivateKey`:
+
+- **Mock mode (default):** omit `walletPrivateKey` and the SDK sends a mock payment payload (`payer:<botId>`) — nothing is signed and **no funds move on-chain**. Use it to integrate and test against a facilitator running with `SETTLEMENT_MODE=mock` (the default for self-hosted instances).
+- **Real settlement:** pass `walletPrivateKey` (`0x...`) so the SDK signs genuine EIP-3009 `TransferWithAuthorization` transfers, **and** point at a facilitator configured with `SETTLEMENT_MODE=real` (or `SETTLEMENT_MODE=testnet` for Base Sepolia). Both sides are required — a wallet key against a mock-mode server still settles nothing.
 
 ## x402 Auto-Handler
 
@@ -137,14 +159,16 @@ const client = new PayBotClient({
 
 PayBot enforces progressive trust levels that govern what your bot can do:
 
-| Level | Name | Per-Tx Limit | Daily Limit |
-|-------|------|-------------|-------------|
-| 0 | Suspended | $0 | $0 |
-| 1 | New | $1 | $10 |
-| 2 | Basic | $10 | $100 |
-| 3 | Verified | $100 | $1,000 |
-| 4 | Trusted | $1,000 | $10,000 |
-| 5 | Premium | $10,000 | $100,000 |
+| Level | Name | Per-Tx Limit | Daily Limit | Description |
+|-------|------|-------------|-------------|-------------|
+| 0 | Sandbox | $0 | $0 | Test-only mode, no real payments |
+| 1 | Basic | $1 | $10 | Email-verified, micropayments only |
+| 2 | Verified | $10 | $100 | KYB-verified operator |
+| 3 | Trusted | $100 | $1,000 | 30-day clean history |
+| 4 | Premium | $1,000 | $10,000 | Manual review passed |
+| 5 | Enterprise | Custom | Custom | Contract-backed, limits negotiated |
+
+New bots register at level 1 (Basic) by default. Names and limits mirror the facilitator's canonical trust registry.
 
 ## SDK Methods
 
@@ -533,17 +557,18 @@ For AI agent frameworks, use [paybot-mcp](https://github.com/RBKunnela/paybot-mc
 | ✅ **EURC + token registry** (per-token EIP-712 domains) | T2.2 |
 | ✅ **AP2 settlement adapter** · 🔭 thin **MPP capability seam** (deferred to GA) | T2.3 |
 | ✅ **Python SDK 0.1.0** (real EIP-3009 signing) | T3.2 (partial) |
+| ✅ **Network expansion** — Optimism, Arbitrum One, Polygon PoS (+ Base, Base Sepolia) | T2.1 |
+| ✅ **CLI** — `paybot` command (register/balance/pay/health/networks/tokens) | T3.4 |
 
 **Tier 1 (credibility blockers) is 100% complete** (T1.1–T1.6). Test posture: 331 TS tests / 98.66% coverage · 52 Python tests.
 
 ### Current gaps
 
-- ⬜ **Network expansion (T2.1)** — still **Base + Base Sepolia only**; add Optimism / Arbitrum / Polygon.
 - ⬜ **CCTP V2 cross-chain receive** — ⏰ *time-sensitive: Circle CCTP V1 deprecates 2026-07-31.*
 - ⬜ **Refund + reversal helpers (T2.4)** · ⬜ **Streaming subscriptions (T2.5)** · ⬜ **Wallet-connect bridge (T2.6)**
-- 🟡 **Token breadth** — USDC + EURC done; PYUSD / RLUSD / DAI not added (operator-gated).
+- 🟡 **Token breadth** — USDC + EURC + DAI done; PYUSD / RLUSD not added (no deployments on the supported networks).
 - 🟡 **Language ports (T3.2)** — Python runtime shipped (middleware/x402-handler unported); Go / Rust not started.
-- ⬜ **Framework ports (T3.1)** (Hono/Next/NestJS/FastAPI/Django) · ⬜ **CLI (T3.4)** · ⬜ **Examples + tutorial site (T3.5)** · ⬜ **More MCP tools (T3.3)** · ⬜ **L402 shim (T3.6)**
+- ⬜ **Framework ports (T3.1)** (Hono/Next/NestJS/FastAPI/Django) · ⬜ **Examples + tutorial site (T3.5)** · ⬜ **More MCP tools (T3.3)** · ⬜ **L402 shim (T3.6)**
 - 🔭 **Full MPP (T2.3)** — deliberately deferred; Stripe/Tempo MPP is still preview and shares no signing code with EIP-3009. Detect-only seam ships now.
 
 ### Roadmap ahead
@@ -551,12 +576,11 @@ For AI agent frameworks, use [paybot-mcp](https://github.com/RBKunnela/paybot-mc
 Prioritized by internal gap severity × external leverage (EU-bank credibility, live distribution channels, hard deadlines).
 
 **Phase A — Near-term (rail credibility):**
-1. Network expansion (Optimism + Arbitrum + Polygon) — closes the biggest surface gap vs. Coinbase/Circle/Crossmint.
-2. CCTP V2 cross-chain receive — ⏰ hard deadline (CCTP V1 dies 2026-07-31).
-3. Refund + reversal helpers — table-stakes for real commerce.
-4. Token breadth (PYUSD/RLUSD/DAI, operator-gated).
+1. CCTP V2 cross-chain receive — ⏰ hard deadline (CCTP V1 dies 2026-07-31).
+2. Refund + reversal helpers — table-stakes for real commerce.
+3. Token breadth (PYUSD/RLUSD, operator-gated).
 
-**Phase B — Mid-term (agent-economy surface):** streaming subscriptions · CLI · framework ports (Hono/Next/FastAPI first) · examples + tutorial site · wallet-connect bridge.
+**Phase B — Mid-term (agent-economy surface):** streaming subscriptions · framework ports (Hono/Next/FastAPI first) · examples + tutorial site · wallet-connect bridge.
 
 **Phase C — Strategic / opportunistic:** full MPP (on GA) · more language ports (Go/Rust) · L402/Lightning shim · more MCP tools.
 
