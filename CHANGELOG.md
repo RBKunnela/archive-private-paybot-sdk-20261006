@@ -9,6 +9,30 @@ This changelog covers the TypeScript package (`paybot-sdk` on npm). The Python
 port (`packages/python/`, published to PyPI) is versioned independently and ships
 at `0.2.0` alongside this release.
 
+## [0.5.1] - 2026-06-10
+
+Docs-only patch release. Its purpose is to push the README onboarding overhaul
+to npm, where most users actually read it.
+
+### Documentation
+
+- **README onboarding overhaul** (#97) — documents the `signup()` → API-key
+  path ("Get your API key" section, no dashboard needed), adds the
+  mock-mode vs real-settlement section, fixes the trust-level table to mirror
+  the facilitator's canonical registry, and cleans up the stale roadmap.
+- **"ESM only" note** near Install — the package ships no CommonJS export, so
+  `require('paybot-sdk')` in a default `npm init -y` project fails with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`. The README now tells users to set
+  `"type": "module"` (or use `.mjs`).
+- **Base-units note** — documents that amounts returned by `history()` /
+  `balance()` payment records are 6-decimal USDC base units
+  (`1000000` = 1 USDC), unlike the human-readable strings passed to `pay()`.
+
+### CI
+
+- **Quickstart smoke test** (#98) — daily CI job runs the README quickstart
+  against the hosted facilitator, so onboarding docs cannot silently rot.
+
 ## [0.5.0] - 2026-06-07
 
 Bundles the pending-approval (HITL) feature, a set of correctness/security fixes

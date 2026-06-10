@@ -25,6 +25,11 @@ The SDK wraps payment logic for bots, handling registration, payment execution, 
 npm install paybot-sdk
 ```
 
+> **ESM only.** This package ships no CommonJS export — `require('paybot-sdk')`
+> fails with `ERR_PACKAGE_PATH_NOT_EXPORTED`. A fresh `npm init -y` project
+> defaults to CommonJS, so set `"type": "module"` in your `package.json` (or
+> use a `.mjs` file) and load the SDK with `import`.
+
 ## Get your API key
 
 No dashboard needed — one `signup()` call against the hosted facilitator at `https://api.paybotcore.com` creates everything:
@@ -181,6 +186,8 @@ New bots register at level 1 (Basic) by default. Names and limits mirror the fac
 | `client.history(limit?)` | Get transaction history |
 | `client.setLimits(limits)` | Update spending limits |
 | `client.health()` | Check facilitator health |
+
+> **Units:** payment amounts returned by `history()` / `balance()` records are in 6-decimal USDC base units (`1000000` = 1 USDC) — unlike the human-readable strings you pass to `pay()` (e.g. `'0.01'`).
 
 ## CLI
 

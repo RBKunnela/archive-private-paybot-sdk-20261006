@@ -1,10 +1,9 @@
-#!/usr/bin/env node
 /**
  * Quickstart smoke test vs the hosted facilitator (story DP-1.4).
  *
  * Runs the LITERAL README quickstart against the live hosted facilitator
  * using the PUBLISHED npm package (`npm install paybot-sdk@latest` in a temp
- * dir) — i.e. exactly what a stranger who reads the README installs and runs.
+ * dir) â€” i.e. exactly what a stranger who reads the README installs and runs.
  * Unit tests mock the server and the server deploys without exercising
  * published clients, so this script is the only thing that continuously
  * proves "README + npm + hosted URL" still line up. Any drift = exit 1.
@@ -19,13 +18,13 @@
  *   Step 4 "Mock mode"          -> no walletPrivateKey passed => mock mode, no funds move
  *
  * Fresh identity per run (AC: "fresh signup identity per run"):
- *   - botId defaults/collisions are GLOBAL on the hosted facilitator — a reused
+ *   - botId defaults/collisions are GLOBAL on the hosted facilitator â€” a reused
  *     botId 409s on signup's internal register step. So every run generates a
  *     fresh random botId AND a fresh random email (smoke-<timestamp>-<rand>).
  *   - This also means the job needs ZERO stored secrets: each run
  *     self-provisions a throwaway identity and never reuses credentials.
  *
- * Security: the API key returned by signup() is never printed in full —
+ * Security: the API key returned by signup() is never printed in full â€”
  * only its last 4 characters (see maskApiKey).
  *
  * Usage:
@@ -49,7 +48,7 @@ export const DEFAULT_FACILITATOR_URL = 'https://api.paybotcore.com';
  * Generate a fresh throwaway identity for one smoke run.
  *
  * Both the email and the botId embed a timestamp + random suffix because the
- * hosted facilitator's botId namespace is global — reusing a botId makes
+ * hosted facilitator's botId namespace is global â€” reusing a botId makes
  * signup's internal register step 409. Fresh per run = no collisions and no
  * stored secrets.
  *
@@ -71,7 +70,7 @@ export function generateIdentity(now = Date.now(), rand = randomBytes(4).toStrin
  * Mask an API key for safe logging: keep at most the last 4 characters.
  *
  * @param {unknown} key - The API key (any non-string yields the full mask).
- * @returns {string} e.g. "****abcd" — never the full key.
+ * @returns {string} e.g. "****abcd" â€” never the full key.
  */
 export function maskApiKey(key) {
   if (typeof key !== 'string' || key.length === 0) return '****';
@@ -160,7 +159,7 @@ function fail(step, detail) {
  * @returns {Promise<{ ok: true } | { ok: false, step: string, detail: string }>}
  */
 async function attemptQuickstart(PayBotClient, facilitatorUrl) {
-  // ---- Step 2: README "Get your API key" — signup() with a FRESH identity.
+  // ---- Step 2: README "Get your API key" â€” signup() with a FRESH identity.
   const identity = generateIdentity();
   console.log(`[2/3] signup() as ${identity.email} (botId: ${identity.botId})`);
   let account;
@@ -182,7 +181,7 @@ async function attemptQuickstart(PayBotClient, facilitatorUrl) {
   }
   console.log(`      operatorId: ${account.operatorId}, apiKey: ${maskApiKey(account.apiKey)}`);
 
-  // ---- Step 3: README "Quick Start" — construct the client and pay() in
+  // ---- Step 3: README "Quick Start" â€” construct the client and pay() in
   // mock mode (no walletPrivateKey => no funds move). README says signup()
   // already registered the bot and to SKIP register(), so we go straight to pay().
   console.log('[3/3] pay() in mock mode');
@@ -220,14 +219,14 @@ async function main() {
   const facilitatorUrl = process.env.PAYBOT_FACILITATOR_URL || DEFAULT_FACILITATOR_URL;
   console.log(`Quickstart smoke vs ${facilitatorUrl}`);
 
-  // ---- Step 1: README "Install" — install the PUBLISHED package in a temp dir.
+  // ---- Step 1: README "Install" â€” install the PUBLISHED package in a temp dir.
   // The point is testing what users actually install, not the local source tree.
   const workDir = await mkdtemp(join(tmpdir(), 'paybot-quickstart-smoke-'));
   let sdk;
   try {
     console.log(`[1/3] npm install paybot-sdk@latest (temp dir: ${workDir})`);
     try {
-      // A package.json anchors npm to the temp dir — without one, npm walks up
+      // A package.json anchors npm to the temp dir â€” without one, npm walks up
       // the directory tree and may install into an unrelated parent project.
       await writeFile(
         join(workDir, 'package.json'),
@@ -258,16 +257,16 @@ async function main() {
 
     // ---- Steps 2-3 (network phase) with a SINGLE retry. A retry uses a brand
     // new identity (botId collisions are global), absorbing transient network
-    // noise without masking real drift — two consecutive failures = red.
+    // noise without masking real drift â€” two consecutive failures = red.
     let outcome = await attemptQuickstart(sdk, facilitatorUrl);
     if (!outcome.ok) {
-      console.warn(`\nAttempt 1 failed at "${outcome.step}" — retrying once with a fresh identity...\n`);
+      console.warn(`\nAttempt 1 failed at "${outcome.step}" â€” retrying once with a fresh identity...\n`);
       outcome = await attemptQuickstart(sdk, facilitatorUrl);
     }
     if (!outcome.ok) {
       fail(outcome.step, outcome.detail);
     }
-    console.log('\nQUICKSTART SMOKE PASSED — README quickstart works against the hosted facilitator.');
+    console.log('\nQUICKSTART SMOKE PASSED â€” README quickstart works against the hosted facilitator.');
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
   }
