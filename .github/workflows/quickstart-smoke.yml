@@ -1,0 +1,62 @@
+# Quickstart smoke test vs the hosted facilitator (story DP-1.4).
+#
+# WHY: hosted v0.2.0 silently rejected every published-SDK pay() for months
+# because nothing continuously ran "what users install" against "what we host".
+# This job is a stand-in for a fresh outside evaluator: it npm-installs
+# paybot-sdk@latest and runs the LITERAL README quickstart (signup -> mock pay)
+# against https://api.paybotcore.com. Contract drift = red build within a day.
+#
+# NO SECRETS REQUIRED: each run self-provisions a throwaway identity
+# (fresh random email + fresh random botId per run — botId collisions are
+# global on the hosted facilitator, so reuse would 409). Nothing sensitive
+# is stored, and the script masks API keys in all output.
+#
+# FAILURE = LOUD: the job exits non-zero naming the failed quickstart step and
+# the server response; GitHub turns that into a red run + notification email
+# to the repo owner. A failure here means the README quickstart is broken for
+# real users RIGHT NOW — treat it as a P0 and open a drift story.
+#
+# To point at a different facilitator (e.g. staging), use workflow_dispatch
+# with the facilitator_url input.
+
+name: quickstart-smoke
+
+on:
+  schedule:
+    # Daily at 06:17 UTC (off the :00 spike so GitHub doesn't delay/drop it).
+    - cron: '17 6 * * *'
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*' # belt-and-braces in case a version is tagged without a GitHub release
+  workflow_dispatch:
+    inputs:
+      facilitator_url:
+        description: 'Facilitator base URL to smoke against'
+        required: false
+        default: 'https://api.paybotcore.com'
+
+permissions:
+  contents: read
+
+jobs:
+  quickstart-smoke:
+    name: README quickstart vs hosted facilitator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The script installs the PUBLISHED paybot-sdk@latest in a temp dir
+      # (testing what users install, not local source), generates a fresh
+      # throwaway identity, then runs signup -> mock pay() exactly as the
+      # README tells users to. No repo dependencies are needed.
+      - name: Run README quickstart against hosted facilitator
+        env:
+          PAYBOT_FACILITATOR_URL: ${{ inputs.facilitator_url || 'https://api.paybotcore.com' }}
+        run: node scripts/quickstart-smoke.mjs
