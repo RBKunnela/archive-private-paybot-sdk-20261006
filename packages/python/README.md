@@ -54,7 +54,8 @@ asyncio.run(main())
 | `src/x402-v2.ts` | `paybot_sdk/x402_v2.py` | ✅ `X402Handler` — 402 parse, x402/MPP/dual signing, `upto` scheme + capture validation, PAYMENT-SIGNATURE/RESPONSE headers, submit/verify |
 | `src/telemetry.ts` | `paybot_sdk/telemetry.py` | ✅ Opt-in `PayBotTracer`/`PayBotSpan` protocols + `with_span`, no OTel dependency |
 | `src/micropayment-engine.ts` | `paybot_sdk/micropayment_engine.py` | ✅ `MicropaymentEngine` — queue, thresholds, signed batch, stats |
-| `src/ap2.ts` | `paybot_sdk/ap2.py` | ✅ `Ap2Adapter` (does NOT verify the AP2 VC signature — documented trust boundary) |
+| `src/ap2.ts` | `paybot_sdk/ap2.py` | ✅ `Ap2Adapter` legacy slice (translation-only; does NOT verify the AP2 VC signature) |
+| `src/ap2-vc.ts` | — | ⚠️ **Parity gap (AK-1):** AP2 mandate VC verification (`verifyMandate`, `settleVc`, replay store, trust anchors) is **TypeScript-only for now**. Python callers needing verified AP2 settlement must verify out-of-band or settle through paybot core. Port tracked as an AK-1 follow-up. |
 | `src/mpp-seam.ts` | `paybot_sdk/mpp_seam.py` | ✅ `detect_mpp_capability` + `create_mpp_seam` (`settle` raises `MPP_NOT_IMPLEMENTED` — full MPP deferred to GA) |
 | `src/webhook.ts` | `paybot_sdk/webhook.py` | ✅ Full (`verify_webhook_signature`, HMAC-SHA256, replay guard) |
 | `src/index.ts` | `paybot_sdk/__init__.py` | ✅ Full exports |

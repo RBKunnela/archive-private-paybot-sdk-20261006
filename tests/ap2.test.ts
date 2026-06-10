@@ -236,7 +236,12 @@ describe('Ap2Adapter.settle', () => {
       authToken: 'tok_123',
     });
 
-    expect(receipt).toEqual(fakeReceipt);
+    // AK-1: the legacy slice path is translation-only, so the receipt is
+    // additionally marked as NOT cryptographically verified.
+    expect(receipt).toEqual({
+      ...fakeReceipt,
+      mandateVerification: 'not-performed',
+    });
 
     // signPayment received an x402 payload built from the mandate.
     expect(signPayment).toHaveBeenCalledTimes(1);

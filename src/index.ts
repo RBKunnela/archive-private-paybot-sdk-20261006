@@ -91,7 +91,39 @@ export {
 export type {
   Ap2PaymentMandate,
   Ap2SettleOptions,
+  Ap2SettleVcOptions,
 } from './ap2.js';
+export {
+  verifyMandate,
+  computeMandateHash,
+  canonicalizeJcs,
+  decodeBase58btc,
+  resolveDidKey,
+  resolveDidDocument,
+  isTrustedIssuer,
+  getMandateId,
+  getCartHash,
+  InMemoryReplayStore,
+  AP2_VERIFY_ERROR_CODES,
+  AP2_MANDATE_TYPES,
+  VC_V2_CONTEXT,
+  MAX_VC_BYTES,
+  MAX_VC_DEPTH,
+  MAX_CLOCK_SKEW_MS,
+} from './ap2-vc.js';
+export type {
+  Ap2MandateVc,
+  Ap2Proof,
+  Ap2DataIntegrityProof,
+  Ap2SdJwtProof,
+  Ap2MandateType,
+  Ap2VerifyOptions,
+  Ap2VerifyResult,
+  Ap2VerifyErrorCode,
+  DidDocument,
+  DidVerificationMethod,
+  ReplayStore,
+} from './ap2-vc.js';
 export {
   detectMppCapability,
   createMppSeam,

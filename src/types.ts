@@ -308,6 +308,12 @@ export interface Receipt {
   blockNumber?: number;
   /** Gas used for transaction (if on-chain) */
   gasUsed?: string;
+  /**
+   * Whether the AP2 mandate behind this settlement was cryptographically
+   * verified (`'verified'`, settleVc path) or not (`'not-performed'`,
+   * legacy translation-only path). Absent for non-AP2 settlements.
+   */
+  mandateVerification?: 'verified' | 'not-performed';
 }
 
 /**

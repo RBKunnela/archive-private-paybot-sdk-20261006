@@ -505,24 +505,46 @@ engine.getQueueStatistics();                                      // BatchStatis
 
 ## AP2 + MPP
 
-paybot is a clean x402 settlement engine, so a Google **AP2** (A2A x402-extension) mandate can settle through it directly. The adapter **translates and settles only — it does not yet verify the AP2 verifiable-credential signature** (see the trust-boundary note below; cryptographic mandate verification is in active development). **MPP** (Stripe/Tempo) is still preview — the SDK ships only a detect-and-route capability seam, not a full client.
+paybot is a clean x402 settlement engine, so a Google **AP2** (A2A x402-extension) mandate can settle through it directly. **MPP** (Stripe/Tempo) is still preview — the SDK ships only a detect-and-route capability seam, not a full client.
 
 ```typescript
-import { Ap2Adapter, detectMppCapability } from 'paybot-sdk';
+import { Ap2Adapter, detectMppCapability, InMemoryReplayStore } from 'paybot-sdk';
 
 const ap2 = new Ap2Adapter(handler);              // handler: X402Handler
+
+// Verified path (recommended): full AP2 mandate VC envelope.
+// Fail-closed 8-step pipeline: envelope shape -> pinned proof suite ->
+// offline DID/key resolution -> operator trust anchors -> signature ->
+// temporal validity -> replay -> cart/intent linkage.
+const receipt = await ap2.settleVc(mandateVc, {
+  verify: {
+    trustedIssuers: ['did:key:z6Mk...'],          // EMPTY LIST = NOTHING TRUSTED
+    replayStore: new InMemoryReplayStore(),        // per-process; core is authoritative
+  },
+});
+receipt.mandateVerification; // 'verified'
+
+// Legacy path: translation-only settlement slice (NO authenticity check).
 if (ap2.validateMandate(mandate).valid) {
-  const receipt = await ap2.settle(mandate);      // signs + submits via x402
+  const r = await ap2.settle(mandate);            // signs + submits via x402
+  r.mandateVerification;                          // always 'not-performed'
 }
 
 detectMppCapability(responseHeaders);             // { supported, mode: 'detect-only'|'none', specVersion? }
 // createMppSeam().settle(...) throws MPP_NOT_IMPLEMENTED (501) — full MPP deferred until GA
 ```
 
-> The AP2 adapter is a mandate **envelope** adapter: it settles the payment but does **not**
-> yet verify the AP2 verifiable-credential signature — `validateMandate()` checks structure
-> and expiry only, not authenticity. Verify the VC out-of-band before calling `settle()`.
-> Built-in signature verification is in progress (see Roadmap).
+> **What our AP2 support means (honesty note).** `settleVc()` cryptographically
+> verifies an AP2 mandate VC envelope before settlement: pinned proof suites
+> (the reference SDK's SD-JWT/ES256 shape and W3C `eddsa-jcs-2022`), offline-only
+> DID resolution (`did:key` + operator-pinned `did:web` documents — never a
+> network fetch), an operator trust-anchor list that fails closed when empty,
+> and replay protection keyed `(mandateId, cartHash)`. The legacy
+> `settle(mandate)` slice path remains translation-only: its opaque `signature`
+> field is **not** verified and its receipts are always marked
+> `mandateVerification: 'not-performed'`. PayBot is the consumer side of AP2
+> mandates — it does not issue them. SD-JWT key-binding presentations and
+> delegation chains are not yet supported and are rejected fail-closed.
 
 ## Python SDK
 
@@ -565,7 +587,7 @@ For AI agent frameworks, use [paybot-mcp](https://github.com/RBKunnela/paybot-mc
 | ✅ **OpenTelemetry hooks** (opt-in, zero new deps) | T1.5 |
 | ✅ **Multi-bot pool + spend treasury** | T1.6 |
 | ✅ **EURC + token registry** (per-token EIP-712 domains) | T2.2 |
-| ✅ **AP2 mandate envelope adapter** (settlement only — VC signature verification in progress) · 🔭 thin **MPP capability seam** (deferred to GA) | T2.3 |
+| ✅ **AP2 settlement adapter** · 🔭 thin **MPP capability seam** (deferred to GA) | T2.3 |
 | ✅ **Python SDK 0.1.0** (real EIP-3009 signing) | T3.2 (partial) |
 | ✅ **Network expansion** — Optimism, Arbitrum One, Polygon PoS (+ Base, Base Sepolia) | T2.1 |
 | ✅ **CLI** — `paybot` command (register/balance/pay/health/networks/tokens) | T3.4 |
@@ -594,7 +616,7 @@ Prioritized by internal gap severity × external leverage (EU-bank credibility, 
 
 **Phase C — Strategic / opportunistic:** full MPP (on GA) · more language ports (Go/Rust) · L402/Lightning shim · more MCP tools.
 
-**Strategic posture:** the moat is *self-hosted, non-custodial, MIT, trust-layer-in-the-SDK* — which custodial/portal-locked rivals (Coinbase Agentic Wallets, Circle, Crossmint, Payman) structurally cannot copy. Being a clean x402 settlement engine makes paybot AP2-pluggable (settlement only — see the AP2 trust-boundary note above) and AgentCore-compatible today — so MPP can wait for GA.
+**Strategic posture:** the moat is *self-hosted, non-custodial, MIT, trust-layer-in-the-SDK* — which custodial/portal-locked rivals (Coinbase Agentic Wallets, Circle, Crossmint, Payman) structurally cannot copy. Being a clean x402 settlement engine makes paybot AP2-pluggable and AgentCore-compatible today — so MPP can wait for GA.
 
 ## Deployment Options
 

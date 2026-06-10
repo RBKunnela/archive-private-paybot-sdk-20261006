@@ -12,16 +12,25 @@
  * settle, and translates it into the x402 {@link PaymentRequirements} our
  * {@link X402Handler} already knows how to sign and submit.
  *
- * TRUST BOUNDARY (read carefully):
- *   This adapter does **NOT** verify the AP2 verifiable-credential signature
- *   (`Ap2PaymentMandate.signature`). VC issuance and verification live in the
- *   mandate issuer's trust domain (the AP2 orchestrator / wallet). We treat the
- *   signature as opaque. A caller that needs cryptographic assurance the mandate
- *   is authentic MUST verify the VC out-of-band before handing it to
- *   {@link Ap2Adapter.settle}. {@link Ap2Adapter.validateMandate} only checks
- *   structural completeness and expiry — it is NOT an authenticity check.
+ * TRUST BOUNDARY (updated by story AK-1, 2026-06-10):
+ *   Cryptographic mandate verification IS supported — on the full VC envelope
+ *   only. {@link Ap2Adapter.settleVc} verifies an {@link Ap2MandateVc} through
+ *   the fail-closed 8-step pipeline in `./ap2-vc` (pinned proof suites,
+ *   offline DID resolution, operator trust anchors, signature over the
+ *   canonicalized payload, temporal validity, replay protection, cart→intent
+ *   linkage) BEFORE any translation or signing happens. An unverifiable
+ *   envelope never reaches the x402 rail.
  *
- * Dependencies: ./x402-v2 (X402Handler), ./networks (token registry), ./errors.
+ *   The legacy {@link Ap2PaymentMandate} slice remains **translation-only**:
+ *   its opaque `signature` field is NOT verified, {@link
+ *   Ap2Adapter.validateMandate} checks completeness/expiry only (NOT
+ *   authenticity), and a receipt settled through the legacy {@link
+ *   Ap2Adapter.settle} path is always marked
+ *   `mandateVerification: 'not-performed'`. Verification can only ever
+ *   succeed on the full envelope.
+ *
+ * Dependencies: ./x402-v2 (X402Handler), ./networks (token registry),
+ * ./ap2-vc (VC verification), ./errors.
  * Used by: bot developers integrating AP2-issued mandates with paybot settlement.
  */
 
@@ -34,6 +43,13 @@ import type {
 } from './types.js';
 import { PayBotApiError } from './errors.js';
 import { getToken, getTokenAddress } from './networks.js';
+import {
+  verifyMandate,
+  getMandateId,
+  getCartHash,
+  MAX_CLOCK_SKEW_MS,
+} from './ap2-vc.js';
+import type { Ap2MandateVc, Ap2VerifyOptions } from './ap2-vc.js';
 
 /**
  * The minimal AP2 Payment Mandate surface paybot consumes as the settlement
@@ -237,6 +253,24 @@ export interface Ap2SettleOptions {
 const DEFAULT_PAYMENT_ENDPOINT = 'https://api.paybotcore.com/x402/settle';
 
 /**
+ * Options for {@link Ap2Adapter.settleVc} - settlement of a full, verifiable
+ * AP2 mandate envelope.
+ */
+export interface Ap2SettleVcOptions extends Ap2SettleOptions {
+  /** Trust anchors, pinned DID documents, replay store (see ./ap2-vc). */
+  verify: Ap2VerifyOptions;
+  /**
+   * When an envelope is supplied, verification defaults to REQUIRED.
+   * Setting `false` skips verification (the receipt is then marked
+   * `mandateVerification: 'not-performed'`) - discouraged; exists only for
+   * staged migrations.
+   */
+  requireVerifiedMandate?: boolean;
+  /** Current epoch ms (injectable for deterministic tests). */
+  nowMs?: number;
+}
+
+/**
  * Adapter that settles AP2 Payment Mandates through the x402 rail.
  *
  * Wraps an injected {@link X402Handler}: it builds x402 requirements from the
@@ -360,10 +394,102 @@ export class Ap2Adapter {
 
     const signed = await this.handler.signPayment(payload);
 
-    return this.handler.submitPayment(
+    const receipt = await this.handler.submitPayment(
       signed,
       opts.paymentEndpoint ?? DEFAULT_PAYMENT_ENDPOINT,
       opts.authToken,
     );
+    // Legacy slice path: authenticity was NOT checked (translation-only).
+    return { ...receipt, mandateVerification: 'not-performed' };
+  }
+
+  /**
+   * Settle a full AP2 mandate VC envelope - verification FIRST, fail closed.
+   *
+   * Steps: {@link verifyMandate} (8-step pipeline; default REQUIRED) ->
+   * record the replay key `(mandateId, cartHash)` -> extract the settlement
+   * slice from `credentialSubject` -> {@link Ap2Adapter.settle}. A mandate
+   * that fails verification NEVER reaches translation or signing - there is
+   * no partial path where an unverified envelope settles silently.
+   *
+   * The replay record is written immediately after verification succeeds
+   * (before signing/submission): on a submission failure the mandate is
+   * burned for this process rather than risking a double settlement
+   * (fail-closed direction; paybot core remains the authoritative replay
+   * layer).
+   *
+   * @param vc - The AP2 mandate VC envelope (untrusted input).
+   * @param opts - Verification options + payment endpoint/auth.
+   * @returns The settlement {@link Receipt}, marked
+   *          `mandateVerification: 'verified'` (or `'not-performed'` when
+   *          `requireVerifiedMandate: false` skipped verification).
+   * @throws {PayBotApiError} `INVALID_AP2_MANDATE` (HTTP 400) carrying
+   *          `details.errorCode` (one of the `AP2_*` verify codes) when
+   *          verification fails, or when `credentialSubject` is not a
+   *          settleable payment slice.
+   *
+   * @example
+   *   const receipt = await adapter.settleVc(vc, {
+   *     verify: { trustedIssuers: ['did:key:z6Mk...'] },
+   *   });
+   *   receipt.mandateVerification; // 'verified'
+   */
+  async settleVc(
+    vc: Ap2MandateVc,
+    opts: Ap2SettleVcOptions,
+  ): Promise<Receipt> {
+    const requireVerified = opts.requireVerifiedMandate !== false;
+    let verified = false;
+    if (requireVerified) {
+      const result = verifyMandate(vc, opts.verify, opts.nowMs ?? Date.now());
+      if (!result.verified) {
+        throw new PayBotApiError(
+          `AP2 mandate verification failed: ${result.errorCode} (${result.errorDetail})`,
+          'INVALID_AP2_MANDATE',
+          400,
+          {
+            errorCode: result.errorCode,
+            errorDetail: result.errorDetail,
+            mandateHash: result.mandateHash,
+            issuerDid: result.issuerDid,
+          },
+        );
+      }
+      verified = true;
+      // Record the replay key now - before signing - so a crash mid-settle
+      // cannot let the same mandate settle twice in this process.
+      if (opts.verify.replayStore) {
+        const mandateId = getMandateId(vc) as string;
+        const ttlMs =
+          Date.parse(vc.validUntil as string) -
+          (opts.nowMs ?? Date.now()) +
+          MAX_CLOCK_SKEW_MS;
+        opts.verify.replayStore.record(
+          mandateId,
+          getCartHash(vc),
+          result.mandateHash,
+          ttlMs,
+        );
+      }
+    }
+
+    const slice = vc.credentialSubject as unknown;
+    if (!isAp2Mandate(slice)) {
+      throw new PayBotApiError(
+        'AP2 envelope credentialSubject is not a settleable payment slice',
+        'INVALID_AP2_MANDATE',
+        400,
+        { reason: 'credentialSubject missing settlement fields' },
+      );
+    }
+
+    const receipt = await this.settle(slice, {
+      paymentEndpoint: opts.paymentEndpoint,
+      authToken: opts.authToken,
+    });
+    return {
+      ...receipt,
+      mandateVerification: verified ? 'verified' : 'not-performed',
+    };
   }
 }
