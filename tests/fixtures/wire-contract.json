@@ -45,6 +45,114 @@
         "audit_hash"
       ],
       "additionalProperties": false
+    },
+    "VerifyResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "valid": {
+          "type": "boolean"
+        },
+        "payer": {
+          "type": "string"
+        },
+        "modifiedRequirements": {
+          "type": "object",
+          "properties": {
+            "scheme": {
+              "type": "string"
+            },
+            "network": {
+              "type": "string"
+            },
+            "asset": {
+              "type": "string"
+            },
+            "amount": {
+              "type": "string"
+            },
+            "payTo": {
+              "type": "string"
+            },
+            "maxTimeoutSeconds": {
+              "type": "number"
+            },
+            "extra": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "required": [
+            "scheme",
+            "network",
+            "asset",
+            "amount",
+            "payTo",
+            "maxTimeoutSeconds"
+          ],
+          "additionalProperties": false
+        },
+        "commission": {
+          "type": "object",
+          "properties": {
+            "grossAmount": {
+              "type": "string"
+            },
+            "netAmount": {
+              "type": "string"
+            },
+            "commissionAmount": {
+              "type": "string"
+            },
+            "commissionRate": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "grossAmount",
+            "netAmount",
+            "commissionAmount",
+            "commissionRate"
+          ],
+          "additionalProperties": false
+        },
+        "settlementToken": {
+          "type": "string"
+        },
+        "settlementTokenExpiresAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "valid",
+        "modifiedRequirements",
+        "commission",
+        "settlementToken",
+        "settlementTokenExpiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "SettleResponse": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "transaction": {
+          "type": "string"
+        },
+        "network": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "additionalProperties": false
     }
   }
 }

@@ -26,7 +26,11 @@ import {
 import { generateEIP3009Nonce } from './crypto.js';
 import { EIP3009_TYPES, getToken, getEip712Domain, resolveTokenAddress } from './networks.js';
 import { withSpan, type TelemetryConfig } from './telemetry.js';
-import type { PendingEnvelopeWire } from './wire-contract.js';
+import type {
+  PendingEnvelopeWire,
+  VerifyResponseWire,
+  SettleResponseWire,
+} from './wire-contract.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 /** Default maximum number of cached idempotent results per client instance. */
@@ -447,7 +451,14 @@ export class PayBotClient {
             );
           }
 
-          const settlementToken = verifyData.settlementToken as string | undefined;
+          // Boundary narrow: past the pending branch this is the /verify SUCCESS
+          // wire response (issue #118, B1 slice 2). `Partial` keeps the read
+          // defensive — a non-conforming server degrades gracefully — while the
+          // field NAMES and TYPES are now contract-checked (a core rename breaks
+          // this at compile time; the conformance test pins it to core's snapshot).
+          const verify = verifyData as Readonly<Partial<VerifyResponseWire>>;
+
+          const settlementToken = verify.settlementToken;
           if (!settlementToken) {
             paySpan?.setAttribute('success', false);
             return {
@@ -473,8 +484,8 @@ export class PayBotClient {
                   botId: this.config.botId,
                   settlementToken,
                   payload: payloadBody,
-                  requirements: verifyData.modifiedRequirements ?? requirements,
-                  commission: verifyData.commission,
+                  requirements: verify.modifiedRequirements ?? requirements,
+                  commission: verify.commission,
                 },
               })
             );
@@ -495,8 +506,10 @@ export class PayBotClient {
             throw error;
           }
 
-          const commissionData = verifyData.commission as Record<string, unknown> | undefined;
-          const txHash = settleData.transaction as string | undefined;
+          // Boundary narrow: the /settle SUCCESS wire response (issue #118, slice 2).
+          const settle = settleData as Readonly<Partial<SettleResponseWire>>;
+          const commissionData = verify.commission;
+          const txHash = settle.transaction;
 
           paySpan?.setAttribute('success', true);
           if (txHash) {
@@ -510,7 +523,7 @@ export class PayBotClient {
             netAmount: String(commissionData?.netAmount ?? '0'),
             commissionAmount: String(commissionData?.commissionAmount ?? '0'),
             commissionRate: Number(commissionData?.commissionRate ?? 0),
-            network: settleData.network as string | undefined,
+            network: settle.network,
           };
 
           // Caching is handled by runIdempotent() (only success:true results

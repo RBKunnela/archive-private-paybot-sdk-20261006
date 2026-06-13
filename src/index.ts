@@ -140,8 +140,23 @@ export type {
   VerifyWebhookSignatureOptions,
   SignWebhookPayloadOptions,
 } from './webhook.js';
-// Wire contract (issue #118, B1 slice 1) — the sdk's typed mirror of core's
-// pending-approval response shape, pinned to core's vendored snapshot by
-// `tests/contract/pending-envelope.conformance.test.ts`.
-export type { PendingEnvelopeWire, WireFieldType } from './wire-contract.js';
-export { PENDING_ENVELOPE_WIRE_FIELDS } from './wire-contract.js';
+// Wire contract (issue #118, B1) — the sdk's typed mirrors of core's response
+// shapes, pinned to core's vendored snapshot by the conformance tests.
+// Slice 1: pending-approval envelope. Slice 2: /verify + /settle success.
+export type {
+  PendingEnvelopeWire,
+  WireFieldType,
+  WireFieldDescriptor,
+  WireObjectDescriptor,
+  VerifyResponseWire,
+  SettleResponseWire,
+  RequirementsWire,
+  CommissionWire,
+} from './wire-contract.js';
+export {
+  PENDING_ENVELOPE_WIRE_FIELDS,
+  VERIFY_RESPONSE_WIRE_FIELDS,
+  VERIFY_RESPONSE_REQUIRED_FIELDS,
+  SETTLE_RESPONSE_WIRE_FIELDS,
+  SETTLE_RESPONSE_REQUIRED_FIELDS,
+} from './wire-contract.js';
