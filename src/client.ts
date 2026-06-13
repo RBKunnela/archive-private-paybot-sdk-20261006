@@ -26,6 +26,7 @@ import {
 import { generateEIP3009Nonce } from './crypto.js';
 import { EIP3009_TYPES, getToken, getEip712Domain, resolveTokenAddress } from './networks.js';
 import { withSpan, type TelemetryConfig } from './telemetry.js';
+import type { PendingEnvelopeWire } from './wire-contract.js';
 import { privateKeyToAccount } from 'viem/accounts';
 
 /** Default maximum number of cached idempotent results per client instance. */
@@ -436,7 +437,14 @@ export class PayBotClient {
           if (verifyData.status === 'pending_approval') {
             paySpan?.setAttribute('success', false);
             paySpan?.setAttribute('status', 'pending_approval');
-            return mapPendingEnvelope(verifyData, request.amount);
+            // Boundary narrow: the wire is untyped JSON (`Record<string,unknown>`);
+            // here we conform it to the typed contract (issue #118, B1 slice 1).
+            // `mapPendingEnvelope` stays defensive about missing/odd fields, so a
+            // single contract type guards every downstream read.
+            return mapPendingEnvelope(
+              verifyData as Readonly<Partial<PendingEnvelopeWire>>,
+              request.amount
+            );
           }
 
           const settlementToken = verifyData.settlementToken as string | undefined;
@@ -1168,14 +1176,21 @@ export function amountToBaseUnitsUsd(amountUsd: unknown): string {
  * fields are populated per the existing pattern: gross/net = the requested amount
  * (in base units), commission `'0'`/`0`.
  *
- * @param envelope - The parsed `/verify` pending envelope
- *   (`{ status, approval_id, poll_url, expires_at, amount_usd, reason, … }`).
+ * The `envelope` parameter is typed against {@link PendingEnvelopeWire} — the
+ * sdk's hand-declared mirror of core's `pendingEnvelopeSchema` (issue #118, B1).
+ * A core-side field rename now breaks this read at compile time, and the
+ * contract-conformance test pins {@link PendingEnvelopeWire} to core's vendored
+ * snapshot. `Partial` is intentional: the wire is untyped JSON at runtime, so the
+ * function stays defensive (a non-conforming server degrades gracefully rather
+ * than throwing) while the field NAMES and TYPES remain contract-checked.
+ *
+ * @param envelope - The parsed `/verify` pending envelope (see {@link PendingEnvelopeWire}).
  * @param requestedAmount - The human-readable USD amount the bot requested,
  *   used as a fallback for gross/net when the envelope omits `amount_usd`.
  * @returns A pending `PaymentResult`.
  */
 export function mapPendingEnvelope(
-  envelope: Record<string, unknown>,
+  envelope: Readonly<Partial<PendingEnvelopeWire>>,
   requestedAmount: string
 ): PaymentResult {
   // Prefer the server's amount_usd (authoritative); fall back to the request.
@@ -1191,9 +1206,9 @@ export function mapPendingEnvelope(
     commissionAmount: '0',
     commissionRate: 0,
     status: 'pending_approval',
-    approvalId: envelope.approval_id as string | undefined,
-    pollUrl: envelope.poll_url as string | undefined,
-    expiresAt: envelope.expires_at as string | undefined,
+    approvalId: envelope.approval_id,
+    pollUrl: envelope.poll_url,
+    expiresAt: envelope.expires_at,
     ...(typeof envelope.reason === 'string' ? { error: envelope.reason } : {}),
   };
 }

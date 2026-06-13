@@ -1,0 +1,50 @@
+{
+  "$contract": "paybot-core wire contract",
+  "version": 1,
+  "issue": 118,
+  "generatedFrom": "paybot-core dist/index.js",
+  "definitions": {
+    "PendingEnvelope": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "const": "pending_approval"
+        },
+        "approval_id": {
+          "type": "string"
+        },
+        "poll_url": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "string"
+        },
+        "amount_usd": {
+          "type": "number"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "audit_seq_id": {
+          "type": "number"
+        },
+        "audit_hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "approval_id",
+        "poll_url",
+        "expires_at",
+        "amount_usd",
+        "reason",
+        "audit_seq_id",
+        "audit_hash"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
