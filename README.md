@@ -539,11 +539,19 @@ detectMppCapability(responseHeaders);             // { supported, mode: 'detect-
 > (the reference SDK's SD-JWT/ES256 shape and W3C `eddsa-jcs-2022`), offline-only
 > DID resolution (`did:key` + operator-pinned `did:web` documents — never a
 > network fetch), an operator trust-anchor list that fails closed when empty,
-> and replay protection keyed `(mandateId, cartHash)`. The legacy
-> `settle(mandate)` slice path remains translation-only: its opaque `signature`
-> field is **not** verified and its receipts are always marked
-> `mandateVerification: 'not-performed'`. PayBot is the consumer side of AP2
-> mandates — it does not issue them. SD-JWT key-binding presentations and
+> and replay protection keyed `(mandateId, cartHash)`. This is backed by
+> **official-toolchain interop evidence**: Intent and Cart mandates minted by
+> the `google-agentic-commerce/AP2` reference SD-JWT issuer (pinned commit
+> `e1ea56d`) verify in our pipeline, and tampering any field fails closed —
+> see `tests/fixtures/ap2/PROVENANCE.md` and `tests/ap2-interop.test.ts`
+> (CI: `.github/workflows/ap2-interop.yml`).
+>
+> What this does **not** include: PayBot is the **consumer** side of AP2
+> mandates — it does **not issue** them, and **mandate verification is
+> TypeScript-only** (the Python SDK is translation-only; see its README). The
+> legacy `settle(mandate)` slice path also remains translation-only: its opaque
+> `signature` field is **not** verified and its receipts are always marked
+> `mandateVerification: 'not-performed'`. SD-JWT key-binding presentations and
 > delegation chains are not yet supported and are rejected fail-closed.
 
 ## Python SDK

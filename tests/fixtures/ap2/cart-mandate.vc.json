@@ -1,0 +1,56 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/credentials/v2"
+  ],
+  "type": [
+    "VerifiableCredential",
+    "CartMandate"
+  ],
+  "id": "ap2-sample-cart-001",
+  "issuer": {
+    "id": "did:web:issuer.ap2-sample.example"
+  },
+  "validUntil": "2027-01-01T00:00:00Z",
+  "credentialSubject": {
+    "contents": {
+      "id": "cart_ak1_sample_001",
+      "user_cart_confirmation_required": true,
+      "payment_request": {
+        "method_data": [
+          {
+            "supported_methods": "basic-card",
+            "data": {}
+          }
+        ],
+        "details": {
+          "id": "order_ref_001",
+          "display_items": [
+            {
+              "label": "Red basketball shoes",
+              "amount": {
+                "currency": "USD",
+                "value": 120.0
+              },
+              "refund_period": 30
+            }
+          ],
+          "total": {
+            "label": "Total",
+            "amount": {
+              "currency": "USD",
+              "value": 120.0
+            },
+            "refund_period": 30
+          }
+        }
+      },
+      "cart_expiry": "2027-01-01T00:00:00Z",
+      "merchant_name": "AP2 Sample Merchant"
+    }
+  },
+  "proof": {
+    "type": "SdJwtProof",
+    "token": "eyJhbGciOiAiRVMyNTYiLCAidHlwIjogImV4YW1wbGUrc2Qtand0IiwgImtpZCI6ICJpc3N1ZXIta2V5LTEifQ.eyJkZWxlZ2F0ZV9wYXlsb2FkIjogW3siLi4uIjogIkJSdG50N21BWmNGXzR3cGhTZ08zcWFjUVp2SVNZSC1wZ0NRNG1vQjhkX0kifV0sICJfc2RfYWxnIjogInNoYS0yNTYifQ.yGbg-Rh3ZoQcU9hFjotm0WpvEZiHaEGkvZdwRq7zs7Qy_l0g6jsaX8l1oXeX4M79vSWG8kBUzRVgF8j4_zKf0g~WyI3ZEFCdE5ITWdiZzlzbXVCX19lS2hBIiwgeyJjb250ZW50cyI6IHsiaWQiOiAiY2FydF9hazFfc2FtcGxlXzAwMSIsICJ1c2VyX2NhcnRfY29uZmlybWF0aW9uX3JlcXVpcmVkIjogdHJ1ZSwgInBheW1lbnRfcmVxdWVzdCI6IHsibWV0aG9kX2RhdGEiOiBbeyJzdXBwb3J0ZWRfbWV0aG9kcyI6ICJiYXNpYy1jYXJkIiwgImRhdGEiOiB7fX1dLCAiZGV0YWlscyI6IHsiaWQiOiAib3JkZXJfcmVmXzAwMSIsICJkaXNwbGF5X2l0ZW1zIjogW3sibGFiZWwiOiAiUmVkIGJhc2tldGJhbGwgc2hvZXMiLCAiYW1vdW50IjogeyJjdXJyZW5jeSI6ICJVU0QiLCAidmFsdWUiOiAxMjAuMH0sICJyZWZ1bmRfcGVyaW9kIjogMzB9XSwgInRvdGFsIjogeyJsYWJlbCI6ICJUb3RhbCIsICJhbW91bnQiOiB7ImN1cnJlbmN5IjogIlVTRCIsICJ2YWx1ZSI6IDEyMC4wfSwgInJlZnVuZF9wZXJpb2QiOiAzMH19fSwgImNhcnRfZXhwaXJ5IjogIjIwMjctMDEtMDFUMDA6MDA6MDBaIiwgIm1lcmNoYW50X25hbWUiOiAiQVAyIFNhbXBsZSBNZXJjaGFudCJ9fV0~"
+  },
+  "validFrom": "2026-01-01T00:00:00Z"
+}

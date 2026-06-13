@@ -656,6 +656,51 @@ describe('verifyMandate - key resolution failures (step 3)', () => {
     expect(result.errorCode).toBe('AP2_KEY_RESOLUTION_FAILED');
   });
 
+  it('resolves a BARE reference kid against the DID verificationMethod fragment', () => {
+    // The AP2 reference SD-JWT issuer emits an unqualified kid (e.g. the JWK
+    // kid `key-1`), NOT the DID-fragment URI. The verifier must bind it to
+    // the VM whose id fragment equals the bare kid - interop, not a
+    // weakening (candidate keys still come only from the issuer's doc).
+    const issuer = makeP256Issuer(); // VM id = `${did}#key-1`
+    const subject = paymentSubject();
+    const vc: Ap2MandateVc = {
+      ...envelopeSkeleton(issuer.did, subject),
+      proof: {
+        type: 'SdJwtProof',
+        token: makeReferenceSdJwt(subject, issuer, { kid: 'key-1' }),
+      },
+    };
+    const result = verifyMandate(
+      vc,
+      optsFor(issuer.did, {
+        didDocuments: { [issuer.did]: issuer.didDocument },
+      }),
+      NOW,
+    );
+    expect(result.verified).toBe(true);
+  });
+
+  it('still fails a bare kid that matches no verificationMethod fragment', () => {
+    const issuer = makeP256Issuer(); // only `key-1` exists
+    const subject = paymentSubject();
+    const vc: Ap2MandateVc = {
+      ...envelopeSkeleton(issuer.did, subject),
+      proof: {
+        type: 'SdJwtProof',
+        token: makeReferenceSdJwt(subject, issuer, { kid: 'key-999' }),
+      },
+    };
+    const result = verifyMandate(
+      vc,
+      optsFor(issuer.did, {
+        didDocuments: { [issuer.did]: issuer.didDocument },
+      }),
+      NOW,
+    );
+    expect(result.verified).toBe(false);
+    expect(result.errorCode).toBe('AP2_KEY_RESOLUTION_FAILED');
+  });
+
   it('fails when the issuer document has no usable key for the suite', () => {
     const ed = makeEd25519Issuer();
     const p256 = makeP256Issuer();

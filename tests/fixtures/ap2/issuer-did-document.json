@@ -1,0 +1,20 @@
+{
+  "id": "did:web:issuer.ap2-sample.example",
+  "verificationMethod": [
+    {
+      "id": "did:web:issuer.ap2-sample.example#issuer-key-1",
+      "type": "JsonWebKey2020",
+      "controller": "did:web:issuer.ap2-sample.example",
+      "publicKeyJwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "XeJCI0Uj5u2YVCn2PbRJ1HXhpI23bfszQwizViLFWIU",
+        "y": "EHTT5RW7n0yTDPbRH_k-abX6lzgj6Hu8MsCIRRekrHQ",
+        "kid": "did:web:issuer.ap2-sample.example#issuer-key-1"
+      }
+    }
+  ],
+  "assertionMethod": [
+    "did:web:issuer.ap2-sample.example#issuer-key-1"
+  ]
+}

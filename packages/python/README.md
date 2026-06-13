@@ -55,7 +55,7 @@ asyncio.run(main())
 | `src/telemetry.ts` | `paybot_sdk/telemetry.py` | ✅ Opt-in `PayBotTracer`/`PayBotSpan` protocols + `with_span`, no OTel dependency |
 | `src/micropayment-engine.ts` | `paybot_sdk/micropayment_engine.py` | ✅ `MicropaymentEngine` — queue, thresholds, signed batch, stats |
 | `src/ap2.ts` | `paybot_sdk/ap2.py` | ✅ `Ap2Adapter` legacy slice (translation-only; does NOT verify the AP2 VC signature) |
-| `src/ap2-vc.ts` | — | ⚠️ **Parity gap (AK-1):** AP2 mandate VC verification (`verifyMandate`, `settleVc`, replay store, trust anchors) is **TypeScript-only for now**. Python callers needing verified AP2 settlement must verify out-of-band or settle through paybot core. Port tracked as an AK-1 follow-up. |
+| `src/ap2-vc.ts` | — | ⚠️ **Parity gap (AK-1):** AP2 mandate VC verification (`verifyMandate`, `settleVc`, replay store, trust anchors) is **TypeScript-only**. See "AP2 VC verification parity gap" below. |
 | `src/mpp-seam.ts` | `paybot_sdk/mpp_seam.py` | ✅ `detect_mpp_capability` + `create_mpp_seam` (`settle` raises `MPP_NOT_IMPLEMENTED` — full MPP deferred to GA) |
 | `src/webhook.ts` | `paybot_sdk/webhook.py` | ✅ Full (`verify_webhook_signature`, HMAC-SHA256, replay guard) |
 | `src/index.ts` | `paybot_sdk/__init__.py` | ✅ Full exports |
@@ -96,6 +96,35 @@ ok = verify_webhook_signature(
 The signing string is `f"{t}.{payload}"` and the header format is
 `t=<unix_ts>,v1=<hmac_sha256_hex>`, identical to the TS
 `verifyWebhookSignature`, so a server-signed webhook verifies in either runtime.
+
+## AP2 VC verification parity gap (AK-1)
+
+**The Python SDK does NOT verify AP2 mandate verifiable-credential signatures.**
+AP2 VC verification — the fail-closed 8-step pipeline (`verifyMandate`),
+SD-JWT/`eddsa-jcs-2022` proof checking, offline `did:key`/`did:web` resolution,
+operator trust anchors, replay protection, and verified settlement (`settleVc`)
+— lives in **TypeScript only** (`src/ap2-vc.ts`). The Python `paybot_sdk/ap2.py`
+module is **translation-only**: it maps the settlement slice of an AP2 Payment
+Mandate onto x402 requirements and treats the VC signature as opaque (its module
+docstring states this trust boundary).
+
+Do **not** represent the Python SDK as verifying AP2 mandates. A Python caller
+that needs cryptographic assurance a mandate is authentic MUST either:
+
+1. verify the VC out-of-band before handing it to `Ap2Adapter.settle`, or
+2. settle through **paybot core**, whose settle path is the authoritative
+   verification + audit + replay layer.
+
+Mirroring the 1300+ line TS verify pipeline into Python is deliberately **out of
+scope** for the AK-1 slice (per task T7's explicit parity-gap allowance — a full
+port, not a half-implementation). Tracked as a follow-up:
+
+> **TODO (AK-1 follow-up):** Port `src/ap2-vc.ts` verification to
+> `paybot_sdk/ap2_vc.py` (envelope types, JCS canonicalization, `did:key`
+> resolver, SD-JWT ES256 + `eddsa-jcs-2022` proof verification, replay store,
+> the 8-step `verify_mandate`) with the official-fixture interop test from
+> `tests/ap2-interop.test.ts` reproduced under `packages/python/tests/`.
+> Until then this row stays ⚠️ in the parity table above.
 
 ## Notes
 

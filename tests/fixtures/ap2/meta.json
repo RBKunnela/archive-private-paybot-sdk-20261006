@@ -1,0 +1,8 @@
+{
+  "issuerDid": "did:web:issuer.ap2-sample.example",
+  "kid": "did:web:issuer.ap2-sample.example#issuer-key-1",
+  "referenceRepo": "https://github.com/google-agentic-commerce/AP2",
+  "referenceCommit": "e1ea56db72a6385bce3e5c1112b3a56ce60acb43",
+  "proofSuite": "sd-jwt-es256",
+  "note": "Minted by the AP2 reference SD-JWT issuer (ap2.sdk.sdjwt.sd_jwt.create, ES256). Tokens carry random RFC 9901 salts; the issuer key is deterministic."
+}

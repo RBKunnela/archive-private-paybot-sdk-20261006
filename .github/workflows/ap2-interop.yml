@@ -1,0 +1,138 @@
+name: AP2 Interop
+
+# Story AK-1 / AC6 - round-trip interop against the OFFICIAL
+# google-agentic-commerce/AP2 reference toolchain.
+#
+# This is a SEPARATE workflow (not part of the PR-gating ci.yml) because it
+# depends on an EXTERNAL repo + Python toolchain that can be unavailable or
+# move. It clones the AP2 reference SDK, regenerates the official-toolchain
+# fixtures FRESH with the reference SD-JWT issuer, then runs our TypeScript
+# verifier against them (tests/ap2-interop.test.ts).
+#
+# Triggers: manual (workflow_dispatch) + a weekly schedule so drift in the
+# reference repo (new commit, changed proof suite, changed mandate shape) is
+# caught as a real finding rather than silently rotting. It is intentionally
+# NOT on: pull_request - a transient upstream outage must never block a PR.
+#
+# The "freshly regenerated mandate" round-trip (AC6) lives in the
+# `interop-fresh` job. A `interop-checked-in` job always runs our suite
+# against the committed fixtures so the workflow still proves something even
+# when upstream is unreachable.
+#
+# Actions pinned to immutable SHAs per the repo supply-chain policy (see
+# ci.yml); the adjacent version comment marks floating-tag intent for
+# Dependabot. runs-on: ubuntu-latest is fine - paybot-sdk is a PUBLIC repo
+# (free Actions minutes) and has no self-hosted runner.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Mondays 06:17 UTC - off the top of the hour to avoid scheduler spikes.
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+env:
+  AP2_REF_REPO: https://github.com/google-agentic-commerce/AP2
+  # Pinned conformance commit (matches src/ap2-vc.ts spec-pin +
+  # tests/fixtures/ap2/PROVENANCE.md). A drift here is a deliberate signal.
+  AP2_REF_COMMIT: e1ea56db72a6385bce3e5c1112b3a56ce60acb43
+
+jobs:
+  # Always-available evidence: verify the CHECKED-IN reference-minted fixtures.
+  interop-checked-in:
+    name: interop (checked-in fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify checked-in AP2 reference fixtures
+        run: npx vitest run tests/ap2-interop.test.ts
+
+  # AC6 round-trip: regenerate fixtures FRESH from the reference SDK, then
+  # verify. Network/toolchain unavailability is the ONE permitted skip in this
+  # epic - it sets a step output and the verify step is guarded by it.
+  interop-fresh:
+    name: interop (fresh reference mint - AC6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c  # v6.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # DOCUMENTED AC6 SKIP GATE (the sole permitted skip in epic AK-1):
+      # if the reference repo cannot be cloned at the pinned commit, or its
+      # Python deps cannot install, we record `available=false` and SKIP the
+      # fresh round-trip instead of failing red on an upstream outage. The
+      # checked-in job above still gates. See tests/fixtures/ap2/PROVENANCE.md
+      # and the story AK-1 "Test & documentation requirements".
+      - name: Fetch + install the AP2 reference toolchain (skip-guarded)
+        id: refsdk
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          if ! git clone --no-checkout "$AP2_REF_REPO" /tmp/ap2-ref; then
+            echo "::warning::AP2 reference repo unreachable - skipping fresh round-trip"
+            exit 0
+          fi
+          git -C /tmp/ap2-ref checkout "$AP2_REF_COMMIT" || {
+            echo "::warning::pinned AP2 commit unavailable - skipping"
+            exit 0
+          }
+          python -m pip install --upgrade pip
+          if ! pip install jwcrypto "sd-jwt>=0.0.1" pydantic cryptography; then
+            echo "::warning::AP2 reference Python deps failed to install - skipping"
+            exit 0
+          fi
+          if ! PYTHONPATH=/tmp/ap2-ref/code/sdk/python python -c "import ap2.sdk.sdjwt.sd_jwt"; then
+            echo "::warning::AP2 reference SDK not importable - skipping"
+            exit 0
+          fi
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate official-toolchain fixtures (FRESH mint)
+        if: steps.refsdk.outputs.available == 'true'
+        run: |
+          PYTHONPATH=/tmp/ap2-ref/code/sdk/python \
+            python tests/fixtures/ap2/generate.py \
+              --out tests/fixtures/ap2 \
+              --ref-commit "$AP2_REF_COMMIT"
+
+      - name: Verify freshly-minted reference mandates (AC6 round-trip)
+        if: steps.refsdk.outputs.available == 'true'
+        run: npx vitest run tests/ap2-interop.test.ts
+
+      - name: Report skip (documented AC6 network/fixture gate)
+        if: steps.refsdk.outputs.available != 'true'
+        run: |
+          echo "AC6 fresh round-trip SKIPPED: AP2 reference toolchain was" \
+               "unavailable. This is the single documented skip permitted in" \
+               "epic AK-1. The interop-checked-in job still verified the" \
+               "committed reference-minted fixtures."

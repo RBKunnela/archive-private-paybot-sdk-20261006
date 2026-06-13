@@ -3,10 +3,13 @@
  *
  * AP2 Verifiable-Credential mandate envelope + fail-closed verification.
  *
- * ## Spec pin (T1, AK-1 - recorded 2026-06-10)
+ * ## Spec pin (T1, AK-1 - recorded 2026-06-10, fixtures vendored 2026-06-13)
  *
  * Conformance target: the `google-agentic-commerce/AP2` reference repo at
- * commit `e1ea56db72a6385bce3e5c1112b3a56ce60acb43` (2026-04-29). At that
+ * commit `e1ea56db72a6385bce3e5c1112b3a56ce60acb43` (2026-04-29). Official
+ * Intent + Cart mandate fixtures minted by that commit's reference SD-JWT
+ * issuer are vendored under `tests/fixtures/ap2/` (see PROVENANCE.md) and
+ * verified by `tests/ap2-interop.test.ts` (AC1/AC6). At that
  * commit the reference SDK signs mandates as **SD-JWT compact tokens**
  * (RFC 9901 lineage, `sd_jwt` Python library) whose issuer JWT is signed
  * with **ES256** (ECDSA P-256 + SHA-256; see
@@ -1151,7 +1154,24 @@ export function verifyMandate(
     const kid = suite.header.kid;
     let candidates = methodsOf(doc);
     if (typeof kid === 'string' && kid.length > 0) {
-      candidates = candidates.filter((m) => m.id === kid);
+      // The JOSE `kid` and a DID verificationMethod `id` live in different
+      // namespaces. The AP2 reference SD-JWT issuer
+      // (ap2.sdk.sdjwt.common.header_parameters) propagates the issuer JWK's
+      // BARE `kid` (e.g. `issuer-key-1`) into the SD-JWT header - NOT the
+      // DID-fragment-qualified VM id (`did:web:...#issuer-key-1`). Accept the
+      // conventional bindings: an exact VM id, the VM-id fragment, or
+      // `<issuerDid>#<kid>`. All candidates already come from this issuer's
+      // own DID document (methodsOf(doc)), so widening the kid match here does
+      // NOT permit cross-issuer key confusion - it only tolerates the
+      // namespace gap the official fixtures revealed (AK-1 T1/AC1 finding).
+      const fragmentOf = (id: string): string => {
+        const hash = id.indexOf('#');
+        return hash >= 0 ? id.slice(hash + 1) : id;
+      };
+      const qualified = `${doc.id}#${kid}`;
+      candidates = candidates.filter(
+        (m) => m.id === kid || m.id === qualified || fragmentOf(m.id) === kid,
+      );
       if (candidates.length === 0) {
         return fail(
           'AP2_KEY_RESOLUTION_FAILED',

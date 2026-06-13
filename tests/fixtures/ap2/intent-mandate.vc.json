@@ -1,0 +1,28 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/credentials/v2"
+  ],
+  "type": [
+    "VerifiableCredential",
+    "IntentMandate"
+  ],
+  "id": "ap2-sample-intent-001",
+  "issuer": {
+    "id": "did:web:issuer.ap2-sample.example"
+  },
+  "validUntil": "2027-01-01T00:00:00Z",
+  "credentialSubject": {
+    "user_cart_confirmation_required": true,
+    "natural_language_description": "High top, old school, red basketball shoes",
+    "merchants": [
+      "did:web:merchant.ap2-sample.example"
+    ],
+    "requires_refundability": false,
+    "intent_expiry": "2027-01-01T00:00:00Z"
+  },
+  "proof": {
+    "type": "SdJwtProof",
+    "token": "eyJhbGciOiAiRVMyNTYiLCAidHlwIjogImV4YW1wbGUrc2Qtand0IiwgImtpZCI6ICJpc3N1ZXIta2V5LTEifQ.eyJkZWxlZ2F0ZV9wYXlsb2FkIjogW3siLi4uIjogInZsLUd2VkZQY3N3TEx5RUZ0dEZZU0FtRDdLWnpEcWN3TVJPTEZVZ2liT1kifV0sICJfc2RfYWxnIjogInNoYS0yNTYifQ.5frF4wekergXDvjFFw0vw7CmfH5vFE4nu0dVwRrlMjk4ZStIEDA5SosLyaM9gFiXyZtW9R3e_AmJk858H8-J6g~WyJsZkwzRmp6VHFXZUFzdWczSGxhLTJnIiwgeyJ1c2VyX2NhcnRfY29uZmlybWF0aW9uX3JlcXVpcmVkIjogdHJ1ZSwgIm5hdHVyYWxfbGFuZ3VhZ2VfZGVzY3JpcHRpb24iOiAiSGlnaCB0b3AsIG9sZCBzY2hvb2wsIHJlZCBiYXNrZXRiYWxsIHNob2VzIiwgIm1lcmNoYW50cyI6IFsiZGlkOndlYjptZXJjaGFudC5hcDItc2FtcGxlLmV4YW1wbGUiXSwgInJlcXVpcmVzX3JlZnVuZGFiaWxpdHkiOiBmYWxzZSwgImludGVudF9leHBpcnkiOiAiMjAyNy0wMS0wMVQwMDowMDowMFoifV0~"
+  },
+  "validFrom": "2026-01-01T00:00:00Z"
+}
