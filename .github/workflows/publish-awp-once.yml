@@ -1,0 +1,55 @@
+# One-shot: publish agent-witness-protocol from sibling public repo using this
+# repo's NPM_TOKEN (same FriendlyAI npm account that publishes paybot-sdk).
+# Remove this workflow after AWP has its own NPM_TOKEN + release.yml.
+name: Publish AWP once
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout AWP
+        uses: actions/checkout@v4
+        with:
+          repository: RBKunnela/awp
+          ref: main
+          path: awp
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: https://registry.npmjs.org
+
+      - name: Install, build, test
+        working-directory: awp
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Skip if already published
+        id: guard
+        working-directory: awp
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if npm view "agent-witness-protocol@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "Already on npm: agent-witness-protocol@${PKG_VERSION}"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Will publish agent-witness-protocol@${PKG_VERSION}"
+          fi
+
+      - name: Publish to npm
+        if: steps.guard.outputs.skip == 'false'
+        working-directory: awp
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
