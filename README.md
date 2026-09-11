@@ -558,6 +558,8 @@ detectMppCapability(responseHeaders);             // { supported, mode: 'detect-
 
 A Python port lives in [`packages/python`](./packages/python) (`paybot-sdk` on PyPI, `>=3.10`). Mirrors the TS client surface, real EIP-3009 signing via `eth-account`, and the identical webhook verification contract.
 
+> **Parity note (honest):** `refund()` is **Python-only** today — the TS client has no refund helper (Roadmap T2.4). Phase A semantics: facilitator-side `pending-only` (request accepted ≠ funds returned; explicit `amount` required, no full-payment default).
+
 ```python
 from paybot_sdk import PayBotClient, PayBotConfig, PaymentRequest, verify_webhook_signature
 

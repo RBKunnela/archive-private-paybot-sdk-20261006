@@ -671,16 +671,25 @@ class PayBotClient:
 
         POSTs to ``/refund`` with ``{botId, txHash, amount?, reason?}``.
 
+        STATUS (Phase A): refund support is facilitator-side ``pending-only``.
+        Submitting a refund request does NOT move funds immediately — the
+        facilitator queues it for settlement. A success result means the
+        request was accepted, not that money has returned. There is no
+        automatic full-payment default yet: Phase A asks for an explicit
+        ``amount`` (pass the original payment amount for a full refund).
+
         :param tx_hash: The transaction hash of the payment to refund.
-        :param amount: Optional partial-refund amount (human-readable). When
-            omitted the facilitator refunds the full payment.
+        :param amount: Refund amount (human-readable). Phase A: pass the
+            original payment amount explicitly — no full-payment default.
         :param reason: Optional human-readable refund reason.
         :returns: A :class:`RefundResult`.
 
         :example:
-            >>> r = await client.refund(tx_hash="0xabc")
-            >>> r.success
-            True
+            >>> r = await client.refund(tx_hash="0xabc", amount="0.01")
+            >>> if r.success and r.status == "pending":
+            ...     pass  # queued by facilitator; funds not yet returned
+            ... else:
+            ...     print(r.error)  # handle rejection honestly
         """
         body: Dict[str, Any] = {"botId": self._bot_id, "txHash": tx_hash}
         if amount is not None:
