@@ -133,6 +133,7 @@ class UnsignedReceipt:
     artifact: Optional[ReceiptArtifact] = None
     reputation: Optional[ReceiptReputationPointer] = None
     signer_address: Optional[str] = None
+    prev_receipt_hash: Optional[str] = None
 
 
 @dataclass
@@ -387,6 +388,7 @@ class Receipt:
     confirmed_at: Optional[str] = None
     block_number: Optional[int] = None
     gas_used: Optional[str] = None
+    prev_receipt_hash: Optional[str] = None
 
 
 @dataclass

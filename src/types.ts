@@ -294,6 +294,8 @@ export interface SignedPayment {
 export interface Receipt {
   /** Unique receipt identifier */
   receiptId: string;
+  /** SHA-256 hash of the preceding receipt in this chain (absent for genesis). */
+  prevReceiptHash?: string;
   /** Blockchain transaction ID (if on-chain) */
   transactionId?: string;
   /** Receipt status */
