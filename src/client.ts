@@ -174,7 +174,7 @@ export class PayBotClient {
   }
 
   /**
-   * Shared fetch wrapper with auth headers, timeout, and retry on network errors / 5xx.
+   * Shared fetch wrapper with auth headers, timeout, and configured retries.
    */
   private async _request<T>(
     path: string,
@@ -183,6 +183,7 @@ export class PayBotClient {
       body?: unknown;
       query?: Record<string, string>;
       headers?: Record<string, string>;
+      retryPaymentRequired?: boolean;
     } = {}
   ): Promise<T> {
     const url = new URL(path, this.config.facilitatorUrl);
@@ -223,16 +224,26 @@ export class PayBotClient {
         continue; // retry on network errors
       }
 
-      // Don't retry on 4xx (client errors). Map to the most specific subclass
-      // (auth/policy) while keeping `instanceof PayBotApiError` true for callers.
+      // Don't retry on 4xx (client errors), except the facilitator's explicit
+      // PAYMENT_REQUIRED challenge, which is retryable within maxRetries.
       if (response.status >= 400 && response.status < 500) {
         const errorData = await response.json().catch(() => ({})) as Record<string, unknown>;
-        throw mapHttpError(
+        const mappedError = mapHttpError(
           (errorData.error as string) ?? `HTTP ${response.status}`,
           (errorData.code as string) ?? 'HTTP_ERROR',
           response.status,
           errorData.details as Record<string, unknown> | undefined
         );
+        if (
+          response.status === 402 &&
+          errorData.code === 'PAYMENT_REQUIRED' &&
+          options.retryPaymentRequired === true &&
+          attempt < this.maxRetries
+        ) {
+          lastError = mappedError;
+          continue;
+        }
+        throw mappedError;
       }
 
       // Retry on 5xx
@@ -413,6 +424,7 @@ export class PayBotClient {
                 headers: idempotencyKey !== undefined
                   ? { 'X-Idempotency-Key': idempotencyKey }
                   : undefined,
+                retryPaymentRequired: true,
               })
             );
           } catch (error: unknown) {

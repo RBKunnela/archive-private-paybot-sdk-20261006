@@ -136,6 +136,8 @@ export {
   verifyWebhookSignature,
   signWebhookPayload,
 } from './webhook.js';
+export { hashReceipt, verifyReceiptChain } from './receipts.js';
+export type { HashChainReceipt } from './receipts.js';
 export type {
   VerifyWebhookSignatureOptions,
   SignWebhookPayloadOptions,

@@ -5,6 +5,7 @@ receipt signatures can be verified across SDK runtimes.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from binascii import Error as BinasciiError
 from dataclasses import fields, is_dataclass, replace
@@ -15,10 +16,10 @@ from eth_account.messages import encode_defunct
 from eth_keys.exceptions import BadSignature
 from eth_utils.exceptions import ValidationError
 
-from .types import SignedReceipt, UnsignedReceipt
+from .types import Receipt, SignedReceipt, UnsignedReceipt
 
 
-ReceiptLike = Union[SignedReceipt, UnsignedReceipt, Dict[str, Any]]
+ReceiptLike = Union[Receipt, SignedReceipt, UnsignedReceipt, Dict[str, Any]]
 
 
 def _snake_to_camel(name: str) -> str:
@@ -79,6 +80,29 @@ def canonicalize(value: Any) -> str:
 def receipt_signing_payload(receipt: ReceiptLike) -> str:
     """Return the canonical EIP-191 message string, excluding ``signature``."""
     return canonicalize(_unsigned_receipt(receipt))
+
+
+def hash_receipt(receipt: ReceiptLike) -> str:
+    """Compute SHA-256 over the receipt's canonical JSON as lowercase hex."""
+    return hashlib.sha256(canonicalize(receipt).encode("utf-8")).hexdigest()
+
+
+def _prev_receipt_hash(receipt: ReceiptLike) -> Any:
+    if isinstance(receipt, dict):
+        return receipt.get("prevReceiptHash", receipt.get("prev_receipt_hash"))
+    return getattr(receipt, "prev_receipt_hash", None)
+
+
+def verify_receipt_chain(receipts: list[ReceiptLike]) -> bool:
+    """Validate hash links without assuming or verifying a signature scheme."""
+    if not receipts:
+        return True
+    if _prev_receipt_hash(receipts[0]) is not None:
+        return False
+    return all(
+        _prev_receipt_hash(receipts[index]) == hash_receipt(receipts[index - 1])
+        for index in range(1, len(receipts))
+    )
 
 
 def sign_receipt(receipt: UnsignedReceipt, private_key: str) -> SignedReceipt:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from paybot_sdk import (
@@ -11,9 +13,11 @@ from paybot_sdk import (
     SignedReceipt,
     UnsignedReceipt,
     canonicalize,
+    hash_receipt,
     receipt_signing_payload,
     sign_receipt,
     verify_receipt,
+    verify_receipt_chain,
 )
 
 
@@ -156,3 +160,43 @@ def test_rejects_malformed_receipt_signatures_without_masking_other_errors(signa
     malformed = SignedReceipt(**{**signed.__dict__, "signature": signature})
 
     assert verify_receipt(malformed) is False
+
+
+def test_hashes_receipt_canonical_json_and_serializes_optional_chain_link():
+    receipt = base_receipt()
+    linked = UnsignedReceipt(
+        **{**receipt.__dict__, "prev_receipt_hash": hash_receipt(receipt)}
+    )
+
+    assert len(hash_receipt(receipt)) == 64
+    wire_receipt = json.loads(canonicalize(receipt))
+    reordered = dict(reversed(list(wire_receipt.items())))
+    assert hash_receipt(receipt) == hash_receipt(reordered)
+    assert f'"prevReceiptHash":"{hash_receipt(receipt)}"' in canonicalize(linked)
+
+
+def test_verifies_receipt_chain_and_detects_tampering():
+    first = base_receipt()
+    second = UnsignedReceipt(
+        **{
+            **base_receipt().__dict__,
+            "receipt_id": "receipt_20260516_0002",
+            "prev_receipt_hash": hash_receipt(first),
+        }
+    )
+    third = UnsignedReceipt(
+        **{
+            **base_receipt().__dict__,
+            "receipt_id": "receipt_20260516_0003",
+            "prev_receipt_hash": hash_receipt(second),
+        }
+    )
+
+    assert verify_receipt_chain([]) is True
+    assert verify_receipt_chain([first, second, third]) is True
+    assert verify_receipt_chain(
+        [first, UnsignedReceipt(**{**second.__dict__, "receipt_id": "tampered"}), third]
+    ) is False
+    assert verify_receipt_chain(
+        [UnsignedReceipt(**{**first.__dict__, "prev_receipt_hash": "0" * 64})]
+    ) is False
