@@ -63,7 +63,14 @@ from .networks import (
     parse_caip2,
     resolve_token_address,
 )
-from .receipts import canonicalize, receipt_signing_payload, sign_receipt, verify_receipt
+from .receipts import (
+    canonicalize,
+    hash_receipt,
+    receipt_signing_payload,
+    sign_receipt,
+    verify_receipt,
+    verify_receipt_chain,
+)
 from .telemetry import PayBotSpan, PayBotTracer, TelemetryConfig, with_span
 from .webhook import verify_webhook_signature
 from .x402_v2 import X402Handler
@@ -140,9 +147,11 @@ __all__ = [
     # webhooks + receipts
     "verify_webhook_signature",
     "canonicalize",
+    "hash_receipt",
     "receipt_signing_payload",
     "sign_receipt",
     "verify_receipt",
+    "verify_receipt_chain",
     # telemetry
     "PayBotSpan",
     "PayBotTracer",

@@ -366,6 +366,69 @@ describe('PayBotClient', () => {
       expect(result.error).toContain('ECONNREFUSED');
     });
 
+    it('should return an ETIMEDOUT failure after both attempts time out', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('ETIMEDOUT'));
+      mockFetch.mockRejectedValueOnce(new Error('ETIMEDOUT'));
+
+      const result = await client.pay({
+        resource: 'https://example.com',
+        amount: '0.05',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('ETIMEDOUT');
+    });
+
+    it('should retry a PAYMENT_REQUIRED response and complete payment', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Payment required', code: 'PAYMENT_REQUIRED' }, 402)
+      );
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({
+          valid: true,
+          settlementToken: 'st_retry',
+          commission: {
+            grossAmount: '50000',
+            netAmount: '48750',
+            commissionAmount: '1250',
+            commissionRate: 0.025,
+          },
+        })
+      );
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, transaction: '0xRetryTx', network: 'eip155:84532' })
+      );
+
+      const result = await client.pay({
+        resource: 'https://example.com',
+        amount: '0.05',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(result.success).toBe(true);
+      expect(result.txHash).toBe('0xRetryTx');
+    });
+
+    it('should return the specific insufficient balance failure', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ error: 'Insufficient balance', code: 'INSUFFICIENT_BALANCE' }, 402)
+      );
+
+      const result = await client.pay({
+        resource: 'https://example.com',
+        amount: '0.05',
+        payTo: '0x0000000000000000000000000000000000000001',
+      });
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Insufficient balance');
+      expect(result.errorCode).toBe('INSUFFICIENT_BALANCE');
+    });
+
     it('should use mock payload format when no walletPrivateKey', async () => {
       mockFetch.mockResolvedValueOnce(
         jsonResponse({ valid: true, settlementToken: 'st_x', commission: {} })
