@@ -63,6 +63,6 @@ jobs:
         --recursive
         --skip-git
         ./
-      # Public repo: SARIF upload to Security tab is free (no GHAS needed).
-      # `upload-sarif: true` is the default; declared explicitly for clarity.
-      upload-sarif: true
+      # Repo is PRIVATE on a personal account: no GHAS, SARIF upload fails
+      # 'code scanning is not enabled' (same as CodeQL fix on this branch).
+      upload-sarif: false
