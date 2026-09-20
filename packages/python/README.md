@@ -45,11 +45,11 @@ asyncio.run(main())
 
 | TS module | Python module | Status |
 |---|---|---|
-| `src/types.ts` | `paybot_sdk/types.py` | ✅ Full type surface as `@dataclass` (incl. x402 v2, micropayment, refund types) |
+| `src/types.ts` | `paybot_sdk/types.py` | ✅ Full type surface as `@dataclass` (incl. x402 v2, micropayment, **refund types — Python-only**¹) |
 | `src/networks.ts` | `paybot_sdk/networks.py` | ✅ Full — `NETWORKS`, `TOKENS` (USDC/EURC/PYUSD/RLUSD/DAI) with `signing_method` + `eip712_version`, `get_eip712_domain`, `resolve_token_address`, CAIP-2 helpers |
 | `src/errors.ts` | `paybot_sdk/errors.py` | ✅ Full taxonomy — `PayBotError` → `PayBotApiError` → network/timeout/auth/policy/signature/settlement/unsupported-signing, `map_http_error` |
 | `src/crypto.ts` | `paybot_sdk/crypto.py` | ✅ Full (`generate_eip3009_nonce`) |
-| `src/client.ts` | `paybot_sdk/client.py` | ✅ Full — REST methods, EIP-3009 signing, multi-token resolution, idempotency LRU, `refund()`, telemetry hooks |
+| `src/client.ts` | `paybot_sdk/client.py` | ✅ Full — REST methods, EIP-3009 signing, multi-token resolution, idempotency LRU, telemetry hooks. `refund()` is **Python-only**¹ — no TS refund helper yet (Roadmap T2.4). Phase A: facilitator-side **pending-only** |
 | `src/client-pool.ts` | `paybot_sdk/client_pool.py` | ✅ `PayBotClientPool` — per-bot signing, shared treasury (`TREASURY_EXCEEDED`), `pay_as` |
 | `src/x402-v2.ts` | `paybot_sdk/x402_v2.py` | ✅ `X402Handler` — 402 parse, x402/MPP/dual signing, `upto` scheme + capture validation, PAYMENT-SIGNATURE/RESPONSE headers, submit/verify |
 | `src/telemetry.ts` | `paybot_sdk/telemetry.py` | ✅ Opt-in `PayBotTracer`/`PayBotSpan` protocols + `with_span`, no OTel dependency |
@@ -61,6 +61,12 @@ asyncio.run(main())
 | `src/index.ts` | `paybot_sdk/__init__.py` | ✅ Full exports |
 | `src/middleware.ts` | — | ❌ Not ported (see below) |
 | `src/x402-handler.ts` | — | ⚠️ Not ported as a separate module — its surface is subsumed by `X402Handler` in `x402_v2.py` |
+
+¹ **`refund()` is Python-only** — verified against `src/client.ts` (0 occurrences of
+"refund" in the TS client). The TS refund helper is Roadmap T2.4. Phase A semantics:
+the facilitator records and audits refund requests (**pending-only**) — a successful
+`refund()` call means the request was accepted, **not** that funds have returned.
+See root `README.md` parity note and `scripts/docs_parity_gate.py`. Refs #163 / #151.
 
 **Still unported (honest gaps):**
 
