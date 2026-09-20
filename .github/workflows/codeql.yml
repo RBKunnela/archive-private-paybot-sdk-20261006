@@ -50,18 +50,19 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        uses: github/codeql-action/init@4bd7200e1f146b1c937cae12d258b50f41a53cf8  # v4.38.0
         with:
           languages: ${{ matrix.language }}
           queries: security-extended
 
       - name: Autobuild
-        uses: github/codeql-action/autobuild@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        uses: github/codeql-action/autobuild@4bd7200e1f146b1c937cae12d258b50f41a53cf8  # v4.38.0
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        uses: github/codeql-action/analyze@4bd7200e1f146b1c937cae12d258b50f41a53cf8  # v4.38.0
         with:
           category: "/language:${{ matrix.language }}"
-          # Public repo: SARIF upload to Security tab is free (no GHAS needed).
-          # `upload: true` is the default; declared explicitly for clarity.
-          upload: true
+          # Repo is PRIVATE on a personal account: no GHAS, so Security-tab
+          # upload fails with 'code scanning is not enabled' since 2026-09-20.
+          # Core pattern (PR #3): keep SARIF local, upload as artifact.
+          upload: false
